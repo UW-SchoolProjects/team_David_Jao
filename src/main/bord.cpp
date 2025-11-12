@@ -1,29 +1,11 @@
-# team_David_Jao
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao for the win!!!!!
+/*
+Copyright (c) 2025 CO456 Team (David Jao Project). 
+All rights reserved.
+
+This source code is part of the CO456 Chess Bot Project.
+Unauthorized copying of this file, via any medium, is strictly prohibited.
+Use of this code is permitted for educational and academic purposes only.
+
 -------------------------------------------------------------------------------------------------------------------------------------------
 -------------------------------------------------------::::----==+++--=--------------------------------------------------------------------
 ---------------------------------------------------=-+*##%@@%%#%%%%*%#*+*%%=-=*+-----------------------------------------------------------
@@ -100,3 +82,9 @@ David Jao for the win!!!!!
 ---------*@@@@@@@@@@@@@@@@@@@%%%%@@@@@%###+-------=#@@@@%%@@%*=-+-:-====:::::---*@@@%%%%%%%%%%@@@@@@@@@@@@%@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 ---------%@@@@@@@@@@@@@@@@@%%%%%@@@@@@#*++=-------=%@%@@%%@@@--=::::-==-=-:----+@@@@%%%%%%%%%%@@@@@@@@@@@@@%@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 ---------%@@@@@@@@@@@%@@@@@%%%%@@@@@@%#*+=-------+@@%%@@@%%@@%-:::-:----------=@@@@%%%%%%%%%%%@@@@@@@@@@@@@%%@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+
+© 2025 CO456 Team. Licensed for educational use under the MIT License.
+See LICENSE file for details.
+*/
+
+// David Jao
