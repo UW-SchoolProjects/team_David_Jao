@@ -87,90 +87,96 @@ Use of this code is permitted for educational and academic purposes only.
 See LICENSE file for details.
 */
 
+#include "board.h"
+#include <iostream>
 
-#ifndef BORD_H
-#define BORD_H
-#include <cstdint>
+using namespace std;
 
-// --- 0x88 board constants ---
-#define BOARD_SIZE 128
-#define IS_ONBOARD(sq) (!((sq) & 0x88))
-#define RANK_OF(sq) ((sq) >> 4)
-#define FILE_OF(sq) ((sq) & 7)
-#define MAKE_SQUARE(file, rank) (((rank) << 4) | (file))
-#define NO_SQUARE -1
+void clear_board(Board &b) {
 
-enum Side { 
-    WHITE = 0, 
-    BLACK = 1,
-};
-
-enum PieceType {
-    EMPTY   = 0,
-    PAWN    = 1,
-    KNIGHT  = 2,
-    BISHOP  = 3,
-    ROOK    = 4,
-    QUEEN   = 5,
-    KING    = 6
-};
-
-// idea: for any piece the first bit shows the side and the last 3 bit tells the type of piece it is
-enum Piece {
-    WPAWN   = (WHITE << 3) | PAWN,
-    WKNIGHT = (WHITE << 3) | KNIGHT,
-    WBISHOP = (WHITE << 3) | BISHOP,
-    WROOK   = (WHITE << 3) | ROOK,
-    WQUEEN  = (WHITE << 3) | QUEEN,
-    WKING   = (WHITE << 3) | KING,
-
-    BPAWN   = (BLACK << 3) | PAWN,
-    BKNIGHT = (BLACK << 3) | KNIGHT,
-    BBISHOP = (BLACK << 3) | BISHOP,
-    BROOK   = (BLACK << 3) | ROOK,
-    BQUEEN  = (BLACK << 3) | QUEEN,
-    BKING   = (BLACK << 3) | KING
-};
-
-enum CastlingRights {
-    WKCA = 1,  // White kingside
-    WQCA = 2,  // White queenside
-    BKCA = 4,  // Black kingside
-    BQCA = 8   // Black queenside
-};
-
-struct Board {
-    int squares[BOARD_SIZE];
-    int side;
-    int castling; // Bitmask of castling rights (aka: 王车易位)
-    int ep_square;  // En passant target square (aka: 吃过路兵)
-    int halfmove_clock; // Half-move counter for 50-move rule
-    int fullmove_number; // Full-move count (starts at 1, increments after Black’s move)
-    uint64_t zobrist_key;    // Unique position hash (optional to add now)
-};
-
-
-
-// function waiting to be implmented 
-// reintializes the board to it's most natuarl form (not a very importent function for final product)
-void clear_board(Board &b);
-// Initialize the board array and all state fields to the standard chess starting position
-void setup_startpos(Board &b);
-// Checks if a given integer index refers to a valid (on-board) 0x88 square.
-bool is_square_onboard(int sq);
-// prints out the broad so we can actually see what's going on before the UI plugin is implemented into our app (not a very importent function for final product)
-void print_board(const Board &b);
-
-// inline helper function that can be used any where
-// decodes a piece's side
-inline int color_of(int piece) { return piece >> 3; }
-// decodes the type of the piece
-inline int type_of(int piece)  { return piece & 7; }
-// return if the piece is a empty piece
-inline bool is_empty(int piece) { return piece == EMPTY; }
-// check if 2 pieces were on the same side
-inline bool same_color(int a, int b) {
-    return (a != EMPTY && b != EMPTY && color_of(a) == color_of(b));
+    for (int i = 0; i < BOARD_SIZE; i++) {
+        b.squares[i] = EMPTY;
+    }
+    b.side = WHITE;            
+    b.castling = 0;            
+    b.ep_square = NO_SQUARE;   
+    b.halfmove_clock = 0;
+    b.fullmove_number = 1;
+    b.zobrist_key = 0ULL;      
 }
 
-#endif
+void setup_startpos(Board &b) {
+    clear_board(b);
+    for (int i = 0; i < 8; i++) {
+        b.squares[0x10 + i] = WPAWN;
+    }
+    for (int i = 0; i < 8; i++) {
+        b.squares[0x60 + i] = BPAWN;
+    }
+    b.squares[0x0] = WROOK;
+    b.squares[0x1] = WKNIGHT;
+    b.squares[0x2] = WBISHOP;
+    b.squares[0x3] = WQUEEN;
+    b.squares[0x4] = WKING;
+    b.squares[0x5] = WBISHOP;
+    b.squares[0x6] = WKNIGHT;
+    b.squares[0x7] = WROOK;
+    b.squares[0x70] = BROOK;
+    b.squares[0x71] = BKNIGHT;
+    b.squares[0x72] = BBISHOP;
+    b.squares[0x73] = BQUEEN;
+    b.squares[0x74] = BKING;
+    b.squares[0x75] = BBISHOP;
+    b.squares[0x76] = BKNIGHT;
+    b.squares[0x77] = BROOK;
+    
+
+    b.castling = WKCA | WQCA | BKCA | BQCA;
+    b.ep_square = NO_SQUARE;
+    b.halfmove_clock = 0;
+    b.fullmove_number = 1;
+    // b.zobrist_key = output from our hash update routine
+}
+
+bool is_square_onboard(int sq) {
+    return IS_ONBOARD(sq);
+}
+
+void print_board(const Board &b) {
+    for (int i = 7; i >= 0; i--) {
+        cout << i + 1 << " ";
+        for (int j = 0; j < 8; j++) {
+            auto piece = b.squares[(i << 4) + j];
+
+            if (piece == WPAWN) {
+                cout << " wP"; 
+            } else if (piece == WROOK) {
+                cout << " wR"; 
+            } else if (piece == WKNIGHT) {
+                cout << " wN"; 
+            } else if (piece == WBISHOP) {
+                cout << " wB"; 
+            } else if (piece == WQUEEN) {
+                cout << " wQ"; 
+            } else if (piece == WKING) {
+                cout << " wK"; 
+            } else if (piece == BPAWN) {
+                cout << " bP"; 
+            } else if (piece == BROOK) {
+                cout << " bR"; 
+            } else if (piece == BKNIGHT) {
+                cout << " bN"; 
+            } else if (piece == BBISHOP) {
+                cout << " bB"; 
+            } else if (piece == BQUEEN) {
+                cout << " bQ"; 
+            } else if (piece == BKING) {
+                cout << " bK"; 
+            } else {
+                cout << " --";
+            }
+        }
+        cout << endl;
+    }
+    cout << "    a  b  c  d  e  f  g  h" << endl;
+}
