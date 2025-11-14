@@ -143,6 +143,7 @@ void setup_startpos(Board &b) {
     b.fullmove_number = 1;
     // b.zobrist_key = output from our hash update routine
 
+    rebuild_bitboards(b);
 }
 
 void rebuild_bitboards(Board& b) {
@@ -159,7 +160,7 @@ void rebuild_bitboards(Board& b) {
 bool assert_bb_consistency(const Board& b) {
     Board tmp = b;
     rebuild_bitboards(tmp);
-    
+
     for (int i = 0; i < 16; ++i) {
         if (tmp.bb_piece[i] != b.bb_piece[i]) {
             std::cerr << "Bitboard mismatch: bb_piece[" << i << "]\n";
