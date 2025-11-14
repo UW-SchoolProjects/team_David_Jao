@@ -102,7 +102,14 @@ void clear_board(Board &b) {
     b.ep_square = NO_SQUARE;   
     b.halfmove_clock = 0;
     b.fullmove_number = 1;
-    b.zobrist_key = 0ULL;      
+    b.zobrist_key = 0ULL; 
+    
+    for (int i = 0; i < 16; i++) {
+        b.bb_piece[i] = 0ULL;
+    }
+    b.bb_side[0] = 0ULL;
+    b.bb_side[1] = 0ULL;
+    b.bb_occ = 0ULL;
 }
 
 void setup_startpos(Board &b) {
@@ -129,13 +136,50 @@ void setup_startpos(Board &b) {
     b.squares[0x75] = BBISHOP;
     b.squares[0x76] = BKNIGHT;
     b.squares[0x77] = BROOK;
-    
 
     b.castling = WKCA | WQCA | BKCA | BQCA;
     b.ep_square = NO_SQUARE;
     b.halfmove_clock = 0;
     b.fullmove_number = 1;
     // b.zobrist_key = output from our hash update routine
+
+}
+
+void rebuild_bitboards(Board& b) {
+    for (int i = 7; i >= 0; i--) {
+        for (int j = 0; j < 8; j++) {
+            auto piece = b.squares[MAKE_SQUARE(j, i)];
+            if (piece == EMPTY) {
+                bb_set_piece(b, BB_INDEX(j, i), piece);
+            }
+        }
+    }
+}
+
+bool assert_bb_consistency(const Board& b) {
+    Board tmp = b;
+    rebuild_bitboards(tmp);
+    
+    for (int i = 0; i < 16; ++i) {
+        if (tmp.bb_piece[i] != b.bb_piece[i]) {
+            std::cerr << "Bitboard mismatch: bb_piece[" << i << "]\n";
+            return false;
+        }
+    }
+
+    for (int c = 0; c < 2; ++c) {
+        if (tmp.bb_side[c] != b.bb_side[c]) {
+            std::cerr << "Bitboard mismatch: bb_side[" << c << "]\n";
+            return false;
+        }
+    }
+
+    if (tmp.bb_occ != b.bb_occ) {
+        std::cerr << "Bitboard mismatch: bb_occ\n";
+        return false;
+    }
+
+    return true;
 }
 
 bool is_square_onboard(int sq) {
@@ -146,7 +190,7 @@ void print_board(const Board &b) {
     for (int i = 7; i >= 0; i--) {
         cout << i + 1 << " ";
         for (int j = 0; j < 8; j++) {
-            auto piece = b.squares[(i << 4) + j];
+            auto piece = b.squares[MAKE_SQUARE(j, i)];
 
             if (piece == WPAWN) {
                 cout << " wP"; 

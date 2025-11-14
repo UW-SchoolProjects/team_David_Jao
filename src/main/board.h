@@ -92,6 +92,8 @@ See LICENSE file for details.
 #define BOARD_H
 #include <cstdint>
 using namespace std;
+using U64 = unsigned long long;
+
 
 // --- 0x88 board constants ---
 #define BOARD_SIZE 128
@@ -100,6 +102,10 @@ using namespace std;
 #define FILE_OF(sq) ((sq) & 7)
 #define MAKE_SQUARE(file, rank) (((rank) << 4) | (file))
 #define NO_SQUARE -1
+// Bit index (0..63) uses a1=0, b1=1, ..., h1=7, a2=8, ..., h8=63
+#define BB_INDEX(file, rank)  ((rank) * 8 + (file))
+#define BB_INDEX_FROM_0x88(sq)  ( ((sq) & 7) + 8 * ((sq) >> 4) )   // file + 8*rank
+#define BIT(sq64)  (U64(1) << (sq64))
 
 enum Side { 
     WHITE = 0, 
@@ -148,6 +154,10 @@ struct Board {
     int halfmove_clock; // Half-move counter for 50-move rule
     int fullmove_number; // Full-move count (starts at 1, increments after Black’s move)
     uint64_t zobrist_key;    // Unique position hash (optional to add now)
+
+    U64 bb_piece[16];
+    U64 bb_side[2];
+    U64 bb_occ;
 };
 
 
@@ -161,6 +171,10 @@ void setup_startpos(Board &b);
 bool is_square_onboard(int sq);
 // prints out the broad so we can actually see what's going on before the UI plugin is implemented into our app (not a very importent function for final product)
 void print_board(const Board &b);
+// builds the bit board
+void rebuild_bitboards(Board& b);
+// it verifies that our incremental bitboard updates match what we’d get if you recomputed from
+bool assert_bb_consistency(const Board& b);
 
 // inline helper function that can be used any where
 // decodes a piece's side
@@ -173,5 +187,26 @@ inline bool is_empty(int piece) { return piece == EMPTY; }
 inline bool same_color(int a, int b) {
     return (a != EMPTY && b != EMPTY && color_of(a) == color_of(b));
 }
+
+inline void bb_set_piece(Board& b, int sq64, int piece) {
+    b.bb_piece[piece] |= BIT(sq64);
+    int c = piece >> 3;                 // color from your encoding
+    b.bb_side[c]      |= BIT(sq64);
+    b.bb_occ          |= BIT(sq64);
+}
+
+inline void bb_clear_piece(Board& b, int sq64, int piece) {
+    b.bb_piece[piece] &= ~BIT(sq64);
+    int c = piece >> 3;
+    b.bb_side[c]      &= ~BIT(sq64);
+    b.bb_occ          &= ~BIT(sq64);
+}
+
+inline int popcount(U64 x)    { return __builtin_popcountll(x); }
+inline int lsb_index(U64 x)   { return __builtin_ctzll(x); }       // undefined if x==0
+inline int msb_index(U64 x)   { return 63 - __builtin_clzll(x); }  // undefined if x==0
+inline U64 occ_all(const Board& b)        { return b.bb_occ; }
+inline U64 occ_side(const Board& b, int c){ return b.bb_side[c]; }
+inline U64 bb_of(const Board& b, int piece){ return b.bb_piece[piece]; }
 
 #endif
