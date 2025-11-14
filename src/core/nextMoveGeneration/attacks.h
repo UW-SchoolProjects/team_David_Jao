@@ -1,9 +1,11 @@
 /*
 Copyright (c) 2025 CO456 Team (David Jao Project).
 All rights reserved.
+
 This source code is part of the CO456 Chess Bot Project.
 Unauthorized copying of this file, via any medium, is strictly prohibited.
 Use of this code is permitted for educational and academic purposes only.
+
 -------------------------------------------------------------------------------------------------------------------------------------------
 -------------------------------------------------------::::----==+++--=--------------------------------------------------------------------
 ---------------------------------------------------=-+*##%@@%%#%%%%*%#*+*%%=-=*+-----------------------------------------------------------
@@ -80,56 +82,40 @@ Use of this code is permitted for educational and academic purposes only.
 ---------*@@@@@@@@@@@@@@@@@@@%%%%@@@@@%###+-------=#@@@@%%@@%*=-+-:-====:::::---*@@@%%%%%%%%%%@@@@@@@@@@@@%@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 ---------%@@@@@@@@@@@@@@@@@%%%%%@@@@@@#*++=-------=%@%@@%%@@@--=::::-==-=-:----+@@@@%%%%%%%%%%@@@@@@@@@@@@@%@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 ---------%@@@@@@@@@@@%@@@@@%%%%@@@@@@%#*+=-------+@@%%@@@%%@@%-:::-:----------=@@@@%%%%%%%%%%%@@@@@@@@@@@@@%%@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+
 © 2025 CO456 Team. Licensed for educational use under the MIT License.
 See LICENSE file for details.
 */
 
-#ifndef MOVE_GENERATION_H
-#define MOVE_GENERATION_H
+#ifndef ATTACKS_H
+#define ATTACKS_H
 
 #include <cstdint>
-#include "../../main/board.h"
-#include "move.h"
 
-// Maximum number of moves possible from a single position.
-// 256 is a safe upper bound for standard chess.
-constexpr int MAX_MOVES = 256;
-
-/**
- * Simple fixed-capacity container for moves.
- * Avoids heap allocations in the search and keeps memory contiguous.
- */
-struct MoveList
+namespace chess
 {
-  Move moves[MAX_MOVES];
-  int count = 0;
 
-  void clear() { count = 0; }
+  extern uint64_t knightAttacks[64];
+  extern uint64_t kingAttacks[64];
 
-  void add(const Move &m)
-  {
-    if (count < MAX_MOVES)
-    {
-      moves[count++] = m;
-    }
-    // In production you might assert here instead of silently dropping.
-  }
+  /**
+   * Initialize precomputed attack tables for knights and kings.
+   * Call this once at program startup (e.g., in main or an init function).
+   */
+  void initAttackTables();
 
-  bool empty() const { return count == 0; }
-};
+  /**
+   * Return a bitboard of all squares a bishop on `sq` attacks,
+   * given the current occupancy `occ`.
+   */
+  uint64_t bishopAttacks(int sq, uint64_t occ);
 
-/**
- * Generate all *legal* moves for the given side on the given board.
- *
- * - Uses bitboards internally (via Board's bitboard members).
- * - Returns only moves that do NOT leave the moving side in check.
- * - If captureOnly is true and at least one capture exists, only captures are kept.
- *
- * This is the main entry point that the game tree/search code should call.
- */
-void validMoveGeneration(const Board &board,
-                         Side side,
-                         MoveList &outMoves,
-                         bool captureOnly = false);
+  /**
+   * Return a bitboard of all squares a rook on `sq` attacks,
+   * given the current occupancy `occ`.
+   */
+  uint64_t rookAttacks(int sq, uint64_t occ);
 
-#endif // MOVE_GENERATION_H
+} // namespace chess
+
+#endif // ATTACKS_H

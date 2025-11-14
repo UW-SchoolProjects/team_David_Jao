@@ -91,19 +91,7 @@ See LICENSE file for details.
 #include <string>
 #include <iosfwd>
 
-// #include "board.h"
-
-// If PieceType is defined elsewhere, remove this and include that header instead.
-enum PieceType : uint8_t
-{
-  EMPTY = 0,
-  PAWN = 1,
-  KNIGHT = 2,
-  BISHOP = 3,
-  ROOK = 4,
-  QUEEN = 5,
-  KING = 6
-};
+#include "../../main/board.h"
 
 enum MoveFlag : uint8_t
 {
