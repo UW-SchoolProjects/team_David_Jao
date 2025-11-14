@@ -1,29 +1,11 @@
-# team_David_Jao
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao for the win!!!!!
+/*
+Copyright (c) 2025 CO456 Team (David Jao Project). 
+All rights reserved.
+
+This source code is part of the CO456 Chess Bot Project.
+Unauthorized copying of this file, via any medium, is strictly prohibited.
+Use of this code is permitted for educational and academic purposes only.
+
 -------------------------------------------------------------------------------------------------------------------------------------------
 -------------------------------------------------------::::----==+++--=--------------------------------------------------------------------
 ---------------------------------------------------=-+*##%@@%%#%%%%*%#*+*%%=-=*+-----------------------------------------------------------
@@ -100,3 +82,146 @@ David Jao for the win!!!!!
 ---------*@@@@@@@@@@@@@@@@@@@%%%%@@@@@%###+-------=#@@@@%%@@%*=-+-:-====:::::---*@@@%%%%%%%%%%@@@@@@@@@@@@%@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 ---------%@@@@@@@@@@@@@@@@@%%%%%@@@@@@#*++=-------=%@%@@%%@@@--=::::-==-=-:----+@@@@%%%%%%%%%%@@@@@@@@@@@@@%@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 ---------%@@@@@@@@@@@%@@@@@%%%%@@@@@@%#*+=-------+@@%%@@@%%@@%-:::-:----------=@@@@%%%%%%%%%%%@@@@@@@@@@@@@%%@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+
+© 2025 CO456 Team. Licensed for educational use under the MIT License.
+See LICENSE file for details.
+*/
+
+#include "board.h"
+#include <iostream>
+
+using namespace std;
+
+void clear_board(Board &b) {
+
+    for (int i = 0; i < BOARD_SIZE; i++) {
+        b.squares[i] = EMPTY;
+    }
+    b.side = WHITE;            
+    b.castling = 0;            
+    b.ep_square = NO_SQUARE;   
+    b.halfmove_clock = 0;
+    b.fullmove_number = 1;
+    b.zobrist_key = 0ULL; 
+    
+    for (int i = 0; i < 16; i++) {
+        b.bb_piece[i] = 0ULL;
+    }
+    b.bb_side[0] = 0ULL;
+    b.bb_side[1] = 0ULL;
+    b.bb_occ = 0ULL;
+}
+
+void setup_startpos(Board &b) {
+    clear_board(b);
+    for (int i = 0; i < 8; i++) {
+        b.squares[0x10 + i] = WPAWN;
+    }
+    for (int i = 0; i < 8; i++) {
+        b.squares[0x60 + i] = BPAWN;
+    }
+    b.squares[0x0] = WROOK;
+    b.squares[0x1] = WKNIGHT;
+    b.squares[0x2] = WBISHOP;
+    b.squares[0x3] = WQUEEN;
+    b.squares[0x4] = WKING;
+    b.squares[0x5] = WBISHOP;
+    b.squares[0x6] = WKNIGHT;
+    b.squares[0x7] = WROOK;
+    b.squares[0x70] = BROOK;
+    b.squares[0x71] = BKNIGHT;
+    b.squares[0x72] = BBISHOP;
+    b.squares[0x73] = BQUEEN;
+    b.squares[0x74] = BKING;
+    b.squares[0x75] = BBISHOP;
+    b.squares[0x76] = BKNIGHT;
+    b.squares[0x77] = BROOK;
+
+    b.castling = WKCA | WQCA | BKCA | BQCA;
+    b.ep_square = NO_SQUARE;
+    b.halfmove_clock = 0;
+    b.fullmove_number = 1;
+    // b.zobrist_key = output from our hash update routine
+
+    rebuild_bitboards(b);
+}
+
+void rebuild_bitboards(Board& b) {
+    for (int i = 7; i >= 0; i--) {
+        for (int j = 0; j < 8; j++) {
+            auto piece = b.squares[MAKE_SQUARE(j, i)];
+            if (piece == EMPTY) {
+                bb_set_piece(b, BB_INDEX(j, i), piece);
+            }
+        }
+    }
+}
+
+bool assert_bb_consistency(const Board& b) {
+    Board tmp = b;
+    rebuild_bitboards(tmp);
+
+    for (int i = 0; i < 16; ++i) {
+        if (tmp.bb_piece[i] != b.bb_piece[i]) {
+            std::cerr << "Bitboard mismatch: bb_piece[" << i << "]\n";
+            return false;
+        }
+    }
+
+    for (int c = 0; c < 2; ++c) {
+        if (tmp.bb_side[c] != b.bb_side[c]) {
+            std::cerr << "Bitboard mismatch: bb_side[" << c << "]\n";
+            return false;
+        }
+    }
+
+    if (tmp.bb_occ != b.bb_occ) {
+        std::cerr << "Bitboard mismatch: bb_occ\n";
+        return false;
+    }
+
+    return true;
+}
+
+bool is_square_onboard(int sq) {
+    return IS_ONBOARD(sq);
+}
+
+void print_board(const Board &b) {
+    for (int i = 7; i >= 0; i--) {
+        cout << i + 1 << " ";
+        for (int j = 0; j < 8; j++) {
+            auto piece = b.squares[MAKE_SQUARE(j, i)];
+
+            if (piece == WPAWN) {
+                cout << " wP"; 
+            } else if (piece == WROOK) {
+                cout << " wR"; 
+            } else if (piece == WKNIGHT) {
+                cout << " wN"; 
+            } else if (piece == WBISHOP) {
+                cout << " wB"; 
+            } else if (piece == WQUEEN) {
+                cout << " wQ"; 
+            } else if (piece == WKING) {
+                cout << " wK"; 
+            } else if (piece == BPAWN) {
+                cout << " bP"; 
+            } else if (piece == BROOK) {
+                cout << " bR"; 
+            } else if (piece == BKNIGHT) {
+                cout << " bN"; 
+            } else if (piece == BBISHOP) {
+                cout << " bB"; 
+            } else if (piece == BQUEEN) {
+                cout << " bQ"; 
+            } else if (piece == BKING) {
+                cout << " bK"; 
+            } else {
+                cout << " --";
+            }
+        }
+        cout << endl;
+    }
+    cout << "    a  b  c  d  e  f  g  h" << endl;
+}

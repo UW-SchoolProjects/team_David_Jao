@@ -1,29 +1,11 @@
-# team_David_Jao
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao!
-David Jao for the win!!!!!
+/*
+Copyright (c) 2025 CO456 Team (David Jao Project). 
+All rights reserved.
+
+This source code is part of the CO456 Chess Bot Project.
+Unauthorized copying of this file, via any medium, is strictly prohibited.
+Use of this code is permitted for educational and academic purposes only.
+
 -------------------------------------------------------------------------------------------------------------------------------------------
 -------------------------------------------------------::::----==+++--=--------------------------------------------------------------------
 ---------------------------------------------------=-+*##%@@%%#%%%%*%#*+*%%=-=*+-----------------------------------------------------------
@@ -100,3 +82,131 @@ David Jao for the win!!!!!
 ---------*@@@@@@@@@@@@@@@@@@@%%%%@@@@@%###+-------=#@@@@%%@@%*=-+-:-====:::::---*@@@%%%%%%%%%%@@@@@@@@@@@@%@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 ---------%@@@@@@@@@@@@@@@@@%%%%%@@@@@@#*++=-------=%@%@@%%@@@--=::::-==-=-:----+@@@@%%%%%%%%%%@@@@@@@@@@@@@%@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 ---------%@@@@@@@@@@@%@@@@@%%%%@@@@@@%#*+=-------+@@%%@@@%%@@%-:::-:----------=@@@@%%%%%%%%%%%@@@@@@@@@@@@@%%@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+
+© 2025 CO456 Team. Licensed for educational use under the MIT License.
+See LICENSE file for details.
+*/
+
+
+#ifndef BOARD_H
+#define BOARD_H
+#include <cstdint>
+using namespace std;
+using U64 = unsigned long long;
+
+
+// --- 0x88 board constants ---
+#define BOARD_SIZE 128
+#define IS_ONBOARD(sq) (!((sq) & 0x88))
+#define RANK_OF(sq) ((sq) >> 4)
+#define FILE_OF(sq) ((sq) & 7)
+#define MAKE_SQUARE(file, rank) (((rank) << 4) | (file))
+#define NO_SQUARE -1
+// Bit index (0..63) uses a1=0, b1=1, ..., h1=7, a2=8, ..., h8=63
+#define BB_INDEX(file, rank)  ((rank) * 8 + (file))
+#define BB_INDEX_FROM_0x88(sq)  ( ((sq) & 7) + 8 * ((sq) >> 4) )   // file + 8*rank
+#define BIT(sq64)  (U64(1) << (sq64))
+
+enum Side { 
+    WHITE = 0, 
+    BLACK = 1,
+};
+
+enum PieceType {
+    EMPTY   = 0,
+    PAWN    = 1,
+    KNIGHT  = 2,
+    BISHOP  = 3,
+    ROOK    = 4,
+    QUEEN   = 5,
+    KING    = 6
+};
+
+// idea: for any piece the first bit shows the side and the last 3 bit tells the type of piece it is
+enum Piece {
+    WPAWN   = (WHITE << 3) | PAWN,
+    WKNIGHT = (WHITE << 3) | KNIGHT,
+    WBISHOP = (WHITE << 3) | BISHOP,
+    WROOK   = (WHITE << 3) | ROOK,
+    WQUEEN  = (WHITE << 3) | QUEEN,
+    WKING   = (WHITE << 3) | KING,
+
+    BPAWN   = (BLACK << 3) | PAWN,
+    BKNIGHT = (BLACK << 3) | KNIGHT,
+    BBISHOP = (BLACK << 3) | BISHOP,
+    BROOK   = (BLACK << 3) | ROOK,
+    BQUEEN  = (BLACK << 3) | QUEEN,
+    BKING   = (BLACK << 3) | KING
+};
+
+enum CastlingRights {
+    WKCA = 1,  // White kingside
+    WQCA = 2,  // White queenside
+    BKCA = 4,  // Black kingside
+    BQCA = 8   // Black queenside
+};
+
+struct Board {
+    int squares[BOARD_SIZE];
+    int side;
+    int castling; // Bitmask of castling rights (aka: 王车易位)
+    int ep_square;  // En passant target square (aka: 吃过路兵)
+    int halfmove_clock; // Half-move counter for 50-move rule
+    int fullmove_number; // Full-move count (starts at 1, increments after Black’s move)
+    uint64_t zobrist_key;    // Unique position hash (optional to add now)
+
+    U64 bb_piece[16];
+    U64 bb_side[2];
+    U64 bb_occ;
+};
+
+
+
+// function waiting to be implmented 
+// reintializes the board to it's most natuarl form (not a very importent function for final product)
+void clear_board(Board &b);
+// Initialize the board array and all state fields to the standard chess starting position
+void setup_startpos(Board &b);
+// Checks if a given integer index refers to a valid (on-board) 0x88 square.
+bool is_square_onboard(int sq);
+// prints out the broad so we can actually see what's going on before the UI plugin is implemented into our app (not a very importent function for final product)
+void print_board(const Board &b);
+// builds the bit board
+void rebuild_bitboards(Board& b);
+// it verifies that our incremental bitboard updates match what we’d get if you recomputed from
+bool assert_bb_consistency(const Board& b);
+
+// inline helper function that can be used any where
+// decodes a piece's side
+inline int color_of(int piece) { return piece >> 3; }
+// decodes the type of the piece
+inline int type_of(int piece)  { return piece & 7; }
+// return if the piece is a empty piece
+inline bool is_empty(int piece) { return piece == EMPTY; }
+// check if 2 pieces were on the same side
+inline bool same_color(int a, int b) {
+    return (a != EMPTY && b != EMPTY && color_of(a) == color_of(b));
+}
+
+inline void bb_set_piece(Board& b, int sq64, int piece) {
+    b.bb_piece[piece] |= BIT(sq64);
+    int c = piece >> 3;                 // color from your encoding
+    b.bb_side[c]      |= BIT(sq64);
+    b.bb_occ          |= BIT(sq64);
+}
+
+inline void bb_clear_piece(Board& b, int sq64, int piece) {
+    b.bb_piece[piece] &= ~BIT(sq64);
+    int c = piece >> 3;
+    b.bb_side[c]      &= ~BIT(sq64);
+    b.bb_occ          &= ~BIT(sq64);
+}
+
+inline int popcount(U64 x)    { return __builtin_popcountll(x); }
+inline int lsb_index(U64 x)   { return __builtin_ctzll(x); }       // undefined if x==0
+inline int msb_index(U64 x)   { return 63 - __builtin_clzll(x); }  // undefined if x==0
+inline U64 occ_all(const Board& b)        { return b.bb_occ; }
+inline U64 occ_side(const Board& b, int c){ return b.bb_side[c]; }
+inline U64 bb_of(const Board& b, int piece){ return b.bb_piece[piece]; }
+
+#endif
