@@ -87,141 +87,124 @@ Use of this code is permitted for educational and academic purposes only.
 See LICENSE file for details.
 */
 
-#include "board.h"
+#include "zobrist.h"
 #include <iostream>
+#include "board.h"
 
 using namespace std;
 
-void clear_board(Board &b) {
+uint64_t Z_PIECE_SQ[16][128];
+uint64_t Z_SIDE;
+uint64_t Z_CASTLING[16];
+uint64_t Z_EP_FILE[8];
+uint64_t rng_state[2];
 
-    for (int i = 0; i < BOARD_SIZE; i++) {
-        b.squares[i] = EMPTY;
+void zobrist_init(uint64_t seed) {
+    rng_state[0] = seed;
+    rng_state[1] = seed ^ 0xA0761D6478BD642FULL;
+
+    for (int p = 0; p < 16; ++p) {
+        for (int sq = 0; sq < 128; ++sq) {
+            Z_PIECE_SQ[p][sq] = zobrist_rand();
+        }
     }
-    b.side = WHITE;            
-    b.castling = 0;            
-    b.ep_square = NO_SQUARE;   
-    b.halfmove_clock = 0;
-    b.fullmove_number = 1;
-    b.zobrist_key = 0ULL; 
-    
-    for (int i = 0; i < 16; i++) {
-        b.bb_piece[i] = 0ULL;
-    }
-    b.bb_side[0] = 0ULL;
-    b.bb_side[1] = 0ULL;
-    b.bb_occ = 0ULL;
+    Z_SIDE = zobrist_rand();
+
+    for (int cr = 0; cr < 16; ++cr)
+        Z_CASTLING[cr] = zobrist_rand();
+
+    for (int f = 0; f < 8; ++f)
+        Z_EP_FILE[f] = zobrist_rand();
 }
 
-void setup_startpos(Board &b) {
-    clear_board(b);
-    for (int i = 0; i < 8; i++) {
-        b.squares[0x10 + i] = WPAWN;
-    }
-    for (int i = 0; i < 8; i++) {
-        b.squares[0x60 + i] = BPAWN;
-    }
-    b.squares[0x0] = WROOK;
-    b.squares[0x1] = WKNIGHT;
-    b.squares[0x2] = WBISHOP;
-    b.squares[0x3] = WQUEEN;
-    b.squares[0x4] = WKING;
-    b.squares[0x5] = WBISHOP;
-    b.squares[0x6] = WKNIGHT;
-    b.squares[0x7] = WROOK;
-    b.squares[0x70] = BROOK;
-    b.squares[0x71] = BKNIGHT;
-    b.squares[0x72] = BBISHOP;
-    b.squares[0x73] = BQUEEN;
-    b.squares[0x74] = BKING;
-    b.squares[0x75] = BBISHOP;
-    b.squares[0x76] = BKNIGHT;
-    b.squares[0x77] = BROOK;
-
-    b.castling = WKCA | WQCA | BKCA | BQCA;
-    b.ep_square = NO_SQUARE;
-    b.halfmove_clock = 0;
-    b.fullmove_number = 1;
-    // b.zobrist_key = output from our hash update routine
-
-    rebuild_bitboards(b);
-}
-
-void rebuild_bitboards(Board& b) {
-    for (int i = 7; i >= 0; i--) {
-        for (int j = 0; j < 8; j++) {
-            auto piece = b.squares[MAKE_SQUARE(j, i)];
-            if (piece == EMPTY) {
-                bb_set_piece(b, BB_INDEX(j, i), piece);
+uint64_t compute_zobrist(const Board &b) {
+    uint64_t key = 0ULL;
+    for (int sq = 0; sq < 128; ++sq) {
+        if IS_ONBOARD(sq) {
+            int piece = b.squares[sq];
+            if (piece != EMPTY) {
+                key ^= Z_PIECE_SQ[piece][sq];
             }
         }
     }
+
+    if (b.side == BLACK)
+        key ^= Z_SIDE;
+
+    key ^= Z_CASTLING[b.castling & 0xF];
+
+    if (b.ep_square != NO_SQUARE) {
+        int f = FILE_OF(b.ep_square);
+        key ^= Z_EP_FILE[f];
+    }
+
+    return key;
 }
 
-bool assert_bb_consistency(const Board& b) {
-    Board tmp = b;
-    rebuild_bitboards(tmp);
+// there is currently no code for handeling change for promotions, en-passant capture, rook movement during castling, or EP/castling state changes
+void zobrist_update_move(Board &b, int from, int to, int moved, int captured) {
+    b.zobrist_key ^= Z_PIECE_SQ[moved][from];
+    b.zobrist_key ^= Z_PIECE_SQ[moved][to];
 
-    for (int i = 0; i < 16; ++i) {
-        if (tmp.bb_piece[i] != b.bb_piece[i]) {
-            std::cerr << "Bitboard mismatch: bb_piece[" << i << "]\n";
-            return false;
-        }
+    if (captured != EMPTY) {
+        b.zobrist_key ^= Z_PIECE_SQ[captured][to];
     }
 
-    for (int c = 0; c < 2; ++c) {
-        if (tmp.bb_side[c] != b.bb_side[c]) {
-            std::cerr << "Bitboard mismatch: bb_side[" << c << "]\n";
-            return false;
-        }
-    }
-
-    if (tmp.bb_occ != b.bb_occ) {
-        std::cerr << "Bitboard mismatch: bb_occ\n";
-        return false;
-    }
-
-    return true;
+    b.zobrist_key ^= Z_SIDE;
 }
 
-bool is_square_onboard(int sq) {
-    return IS_ONBOARD(sq);
+void zobrist_update_promotion(Board &b, int to, int moved, int promo_piece) {
+    b.zobrist_key ^= Z_PIECE_SQ[moved][to];
+
+    b.zobrist_key ^= Z_PIECE_SQ[promo_piece][to];
 }
 
-void print_board(const Board &b) {
-    for (int i = 7; i >= 0; i--) {
-        cout << i + 1 << " ";
-        for (int j = 0; j < 8; j++) {
-            auto piece = b.squares[MAKE_SQUARE(j, i)];
+void zobrist_update_en_passant(Board &b, int to, int moved) {
+    int cap_sq = (color_of(moved) == WHITE) ? (to - 16) : (to + 16);
+    int victim = (color_of(moved) == WHITE) ? BPAWN : WPAWN;
 
-            if (piece == WPAWN) {
-                cout << " wP"; 
-            } else if (piece == WROOK) {
-                cout << " wR"; 
-            } else if (piece == WKNIGHT) {
-                cout << " wN"; 
-            } else if (piece == WBISHOP) {
-                cout << " wB"; 
-            } else if (piece == WQUEEN) {
-                cout << " wQ"; 
-            } else if (piece == WKING) {
-                cout << " wK"; 
-            } else if (piece == BPAWN) {
-                cout << " bP"; 
-            } else if (piece == BROOK) {
-                cout << " bR"; 
-            } else if (piece == BKNIGHT) {
-                cout << " bN"; 
-            } else if (piece == BBISHOP) {
-                cout << " bB"; 
-            } else if (piece == BQUEEN) {
-                cout << " bQ"; 
-            } else if (piece == BKING) {
-                cout << " bK"; 
-            } else {
-                cout << " --";
-            }
-        }
-        cout << endl;
+    // Remove the captured pawn from its actual square
+    b.zobrist_key ^= Z_PIECE_SQ[victim][cap_sq];
+}
+
+void zobrist_update_castling_move(Board &b, CastingType type) {
+    if (type == WCK) {
+        int rook_from = MAKE_SQUARE(7, 0);
+        int rook_to   = MAKE_SQUARE(5, 0);
+        b.zobrist_key ^= Z_PIECE_SQ[WROOK][rook_from];
+        b.zobrist_key ^= Z_PIECE_SQ[WROOK][rook_to];
+    } else if (type == WCQ) {
+        int rook_from = MAKE_SQUARE(0, 0);
+        int rook_to   = MAKE_SQUARE(3, 0);
+        b.zobrist_key ^= Z_PIECE_SQ[WROOK][rook_from];
+        b.zobrist_key ^= Z_PIECE_SQ[WROOK][rook_to];
+    } else if (type == BCK) {
+        int rook_from = MAKE_SQUARE(7, 7);
+        int rook_to   = MAKE_SQUARE(5, 7);
+        b.zobrist_key ^= Z_PIECE_SQ[BROOK][rook_from];
+        b.zobrist_key ^= Z_PIECE_SQ[BROOK][rook_to];
+    } else if (type == BCQ) {
+        int rook_from = MAKE_SQUARE(0, 0);
+        int rook_to   = MAKE_SQUARE(3, 0);
+        b.zobrist_key ^= Z_PIECE_SQ[BROOK][rook_from];
+        b.zobrist_key ^= Z_PIECE_SQ[BROOK][rook_to];
     }
-    cout << "    a  b  c  d  e  f  g  h" << endl;
+}
+
+void zobrist_update_castling_rights_EP_file(Board &b, int old_castling, int old_ep_square) {
+    // Remove old EP contribution (if any)
+    if (old_ep_square != NO_SQUARE) {
+        int old_file = FILE_OF(old_ep_square);
+        b.zobrist_key ^= Z_EP_FILE[old_file];
+    }
+
+    // Add new EP contribution (if any)
+    if (b.ep_square != NO_SQUARE) {
+        int new_file = FILE_OF(b.ep_square);
+        b.zobrist_key ^= Z_EP_FILE[new_file];
+    }
+
+    // For castling:
+    b.zobrist_key ^= Z_CASTLING[old_castling & 0xF];
+    b.zobrist_key ^= Z_CASTLING[b.castling & 0xF];
 }
