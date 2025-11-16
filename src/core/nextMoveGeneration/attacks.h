@@ -92,30 +92,25 @@ See LICENSE file for details.
 
 #include <cstdint>
 
-namespace chess
-{
+extern uint64_t knightAttacks[64];
+extern uint64_t kingAttacks[64];
 
-  extern uint64_t knightAttacks[64];
-  extern uint64_t kingAttacks[64];
+/**
+ * Initialize precomputed attack tables for knights and kings.
+ * Call this once at program startup (e.g., in main or an init function).
+ */
+void initAttackTables();
 
-  /**
-   * Initialize precomputed attack tables for knights and kings.
-   * Call this once at program startup (e.g., in main or an init function).
-   */
-  void initAttackTables();
+/**
+ * Return a bitboard of all squares a bishop on `sq` attacks,
+ * given the current occupancy `occ`.
+ */
+uint64_t bishopAttacks(int sq, uint64_t occ);
 
-  /**
-   * Return a bitboard of all squares a bishop on `sq` attacks,
-   * given the current occupancy `occ`.
-   */
-  uint64_t bishopAttacks(int sq, uint64_t occ);
-
-  /**
-   * Return a bitboard of all squares a rook on `sq` attacks,
-   * given the current occupancy `occ`.
-   */
-  uint64_t rookAttacks(int sq, uint64_t occ);
-
-} // namespace chess
+/**
+ * Return a bitboard of all squares a rook on `sq` attacks,
+ * given the current occupancy `occ`.
+ */
+uint64_t rookAttacks(int sq, uint64_t occ);
 
 #endif // ATTACKS_H

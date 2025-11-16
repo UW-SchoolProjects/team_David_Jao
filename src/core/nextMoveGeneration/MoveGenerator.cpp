@@ -143,53 +143,13 @@ extern uint64_t kingAttacks[64];
 uint64_t bishopAttacks(int sq, uint64_t occ);
 uint64_t rookAttacks(int sq, uint64_t occ);
 
-/*
-// ---------------------------------------------------------
-// Forward declarations for piece-type generators (Parent Job 1.2)
-// ---------------------------------------------------------
-
-// static void generateKnightMoves(const Board &board, Side side, MoveList &pseudoMoves);
-// static void generateKingMoves(const Board &board, Side side, MoveList &pseudoMoves);
-// static void generateBishopMoves(const Board &board, Side side, MoveList &pseudoMoves);
-// static void generateRookMoves(const Board &board, Side side, MoveList &pseudoMoves);
-// static void generateQueenMoves(const Board &board, Side side, MoveList &pseudoMoves);
-// static void generatePawnMoves(const Board &board, Side side, MoveList &pseudoMoves);
-*/
-
 // ---------------------------------------------------------
 // Parent Job 1.2: Pseudolegal move generation
 // ---------------------------------------------------------
 
-/*
-static void appendMoves(const Board &board, uint64_t targets, uint64_t myOcc, uint64_t oppOcc,
-                        int from, MoveList &pseudoMoves)
-{
-  uint64_t quiets = targets & ~oppOcc;
-  uint64_t captures = targets & oppOcc;
-
-  uint64_t bb = quiets;
-  while (bb)
-  {
-    int to = popLsb(bb);
-    Move m(from, to, MF_QUIET, EMPTY, EMPTY);
-    pseudoMoves.add(m);
-  }
-
-  bb = captures;
-  while (bb)
-  {
-    int to = popLsb(bb);
-    PieceType captured = getCapturedPieceType(board, to);
-    Move m(from, to, MF_CAPTURE, EMPTY, captured);
-    pseudoMoves.add(m);
-  }
-}
-*/
-
 // ---------------------------------------------------------
 // 1.2.3 — Pawns, Promotions & En Passant
 // ---------------------------------------------------------
-
 static void generatePawnMoves(const Board &board, Side side, MoveList &pseudoMoves)
 {
   uint64_t myPawns = bb_of(board, side == WHITE ? WPAWN : BPAWN);
@@ -206,6 +166,39 @@ static void generatePawnMoves(const Board &board, Side side, MoveList &pseudoMov
   {
     epBit = square0x88ToBitIndex(board.ep_square);
   }
+
+  //   auto appendMoves = [&](uint64_t targets, int from)
+  auto getCaptures = [&](int to, int from, int prorank)
+  {
+    uint64_t mask = 1ULL << to;
+    if (oppOcc & mask)
+    {
+      int toRank = to / 8;
+      PieceType captured = getCapturedPieceType(board, to);
+      if (toRank == prorank)
+      {
+        PieceType promos[4] = {QUEEN, ROOK, BISHOP, KNIGHT};
+        for (PieceType pt : promos)
+        {
+          Move m(from, to, static_cast<MoveFlag>(MF_CAPTURE | MF_PROMOTION),
+                 pt, captured);
+          pseudoMoves.add(m);
+        }
+      }
+      else
+      {
+        Move m(from, to, MF_CAPTURE, EMPTY, captured);
+        pseudoMoves.add(m);
+      }
+    }
+    // En passant capture
+    if (epBit == to)
+    {
+      Move m(from, to, static_cast<MoveFlag>(MF_CAPTURE | MF_EN_PASSANT_CAPTURE),
+             EMPTY, PAWN);
+      pseudoMoves.add(m);
+    }
+  };
 
   while (myPawns)
   {
@@ -256,35 +249,7 @@ static void generatePawnMoves(const Board &board, Side side, MoveList &pseudoMov
         int to = from + 7;
         if (to < 64)
         {
-          uint64_t mask = 1ULL << to;
-          if (oppOcc & mask)
-          {
-            int toRank = to / 8;
-            PieceType captured = getCapturedPieceType(board, to);
-            if (toRank == 7)
-            {
-              // Promotion capture
-              PieceType promos[4] = {QUEEN, ROOK, BISHOP, KNIGHT};
-              for (PieceType pt : promos)
-              {
-                Move m(from, to, static_cast<MoveFlag>(MF_CAPTURE | MF_PROMOTION),
-                       pt, captured);
-                pseudoMoves.add(m);
-              }
-            }
-            else
-            {
-              Move m(from, to, MF_CAPTURE, EMPTY, captured);
-              pseudoMoves.add(m);
-            }
-          }
-          // En passant capture
-          if (epBit == to)
-          {
-            Move m(from, to, static_cast<MoveFlag>(MF_CAPTURE | MF_EN_PASSANT_CAPTURE),
-                   EMPTY, PAWN);
-            pseudoMoves.add(m);
-          }
+          getCaptures(to, from, 7);
         }
       }
 
@@ -294,34 +259,7 @@ static void generatePawnMoves(const Board &board, Side side, MoveList &pseudoMov
         int to = from + 9;
         if (to < 64)
         {
-          uint64_t mask = 1ULL << to;
-          if (oppOcc & mask)
-          {
-            int toRank = to / 8;
-            PieceType captured = getCapturedPieceType(board, to);
-            if (toRank == 7)
-            {
-              PieceType promos[4] = {QUEEN, ROOK, BISHOP, KNIGHT};
-              for (PieceType pt : promos)
-              {
-                Move m(from, to, static_cast<MoveFlag>(MF_CAPTURE | MF_PROMOTION),
-                       pt, captured);
-                pseudoMoves.add(m);
-              }
-            }
-            else
-            {
-              Move m(from, to, MF_CAPTURE, EMPTY, captured);
-              pseudoMoves.add(m);
-            }
-          }
-          // En passant capture
-          if (epBit == to)
-          {
-            Move m(from, to, static_cast<MoveFlag>(MF_CAPTURE | MF_EN_PASSANT_CAPTURE),
-                   EMPTY, PAWN);
-            pseudoMoves.add(m);
-          }
+          getCaptures(to, from, 7);
         }
       }
     }
@@ -368,34 +306,7 @@ static void generatePawnMoves(const Board &board, Side side, MoveList &pseudoMov
         int to = from - 9;
         if (to >= 0)
         {
-          uint64_t mask = 1ULL << to;
-          if (oppOcc & mask)
-          {
-            int toRank = to / 8;
-            PieceType captured = getCapturedPieceType(board, to);
-            if (toRank == 0)
-            {
-              PieceType promos[4] = {QUEEN, ROOK, BISHOP, KNIGHT};
-              for (PieceType pt : promos)
-              {
-                Move m(from, to, static_cast<MoveFlag>(MF_CAPTURE | MF_PROMOTION),
-                       pt, captured);
-                pseudoMoves.add(m);
-              }
-            }
-            else
-            {
-              Move m(from, to, MF_CAPTURE, EMPTY, captured);
-              pseudoMoves.add(m);
-            }
-          }
-          // En passant capture
-          if (epBit == to)
-          {
-            Move m(from, to, static_cast<MoveFlag>(MF_CAPTURE | MF_EN_PASSANT_CAPTURE),
-                   EMPTY, PAWN);
-            pseudoMoves.add(m);
-          }
+          getCaptures(to, from, 0);
         }
       }
 
@@ -405,34 +316,7 @@ static void generatePawnMoves(const Board &board, Side side, MoveList &pseudoMov
         int to = from - 7;
         if (to >= 0)
         {
-          uint64_t mask = 1ULL << to;
-          if (oppOcc & mask)
-          {
-            int toRank = to / 8;
-            PieceType captured = getCapturedPieceType(board, to);
-            if (toRank == 0)
-            {
-              PieceType promos[4] = {QUEEN, ROOK, BISHOP, KNIGHT};
-              for (PieceType pt : promos)
-              {
-                Move m(from, to, static_cast<MoveFlag>(MF_CAPTURE | MF_PROMOTION),
-                       pt, captured);
-                pseudoMoves.add(m);
-              }
-            }
-            else
-            {
-              Move m(from, to, MF_CAPTURE, EMPTY, captured);
-              pseudoMoves.add(m);
-            }
-          }
-          // En passant capture
-          if (epBit == to)
-          {
-            Move m(from, to, static_cast<MoveFlag>(MF_CAPTURE | MF_EN_PASSANT_CAPTURE),
-                   EMPTY, PAWN);
-            pseudoMoves.add(m);
-          }
+          getCaptures(to, from, 0);
         }
       }
     }
@@ -449,13 +333,6 @@ static void generatePseudoLegalMoves(const Board &board,
                                      MoveList &pseudoMoves)
 {
   pseudoMoves.clear();
-
-  // generateKnightMoves(board, side, pseudoMoves);
-  // generateKingMoves(board, side, pseudoMoves);
-  // generateBishopMoves(board, side, pseudoMoves);
-  // generateRookMoves(board, side, pseudoMoves);
-  // generateQueenMoves(board, side, pseudoMoves);
-  // generatePawnMoves(board, side, pseudoMoves);
 
   uint64_t myOcc = occ_side(board, side);
   uint64_t oppOcc = occ_side(board, 1 - side);
@@ -485,8 +362,8 @@ static void generatePseudoLegalMoves(const Board &board,
     }
   };
 
+  // Knight Moves
   uint64_t myKnights = bb_of(board, side == WHITE ? WKNIGHT : BKNIGHT);
-
   while (myKnights)
   {
     int from = popLsb(myKnights);
@@ -495,6 +372,7 @@ static void generatePseudoLegalMoves(const Board &board,
     appendMoves(targets, from);
   }
 
+  // King Moves
   uint64_t myKing = bb_of(board, side == WHITE ? WKING : BKING);
   if (myKing)
   {
@@ -504,10 +382,82 @@ static void generatePseudoLegalMoves(const Board &board,
     appendMoves(targets, from);
 
     // Castling will be added later (pseudolegal: check only empty & rights)
+    // --- Castling (pseudolegal: rights + emptiness only) ---
+    if (side == WHITE)
+    {
+      // White king must be on e1 (file=4, rank=0) to castle
+      const int E1 = BB_INDEX(4, 0);
+      const int F1 = BB_INDEX(5, 0);
+      const int G1 = BB_INDEX(6, 0);
+      const int D1 = BB_INDEX(3, 0);
+      const int C1 = BB_INDEX(2, 0);
+      const int B1 = BB_INDEX(1, 0);
+
+      if (from == E1)
+      {
+        // Kingside castle: e1 -> g1, rights WKCA, squares f1 and g1 must be empty
+        if (board.castling & WKCA)
+        {
+          uint64_t between = BIT(F1) | BIT(G1);
+          if ((occ & between) == 0)
+          {
+            Move m(E1, G1, MF_KING_CASTLE, EMPTY, EMPTY);
+            pseudoMoves.add(m);
+          }
+        }
+
+        // Queenside castle: e1 -> c1, rights WQCA, squares d1, c1, b1 must be empty
+        if (board.castling & WQCA)
+        {
+          uint64_t between = BIT(D1) | BIT(C1) | BIT(B1);
+          if ((occ & between) == 0)
+          {
+            Move m(E1, C1, MF_QUEEN_CASTLE, EMPTY, EMPTY);
+            pseudoMoves.add(m);
+          }
+        }
+      }
+    }
+    else
+    {
+      // side == BLACK
+      // Black king must be on e8 (file=4, rank=7) to castle
+      const int E8 = BB_INDEX(4, 7);
+      const int F8 = BB_INDEX(5, 7);
+      const int G8 = BB_INDEX(6, 7);
+      const int D8 = BB_INDEX(3, 7);
+      const int C8 = BB_INDEX(2, 7);
+      const int B8 = BB_INDEX(1, 7);
+
+      if (from == E8)
+      {
+        // Kingside castle: e8 -> g8, rights BKCA, squares f8 and g8 empty
+        if (board.castling & BKCA)
+        {
+          uint64_t between = BIT(F8) | BIT(G8);
+          if ((occ & between) == 0)
+          {
+            Move m(E8, G8, MF_KING_CASTLE, EMPTY, EMPTY);
+            pseudoMoves.add(m);
+          }
+        }
+
+        // Queenside castle: e8 -> c8, rights BQCA, squares d8, c8, b8 empty
+        if (board.castling & BQCA)
+        {
+          uint64_t between = BIT(D8) | BIT(C8) | BIT(B8);
+          if ((occ & between) == 0)
+          {
+            Move m(E8, C8, MF_QUEEN_CASTLE, EMPTY, EMPTY);
+            pseudoMoves.add(m);
+          }
+        }
+      }
+    }
   }
 
+  // Bishop Moves
   uint64_t myBishops = bb_of(board, side == WHITE ? WBISHOP : BBISHOP);
-
   while (myBishops)
   {
     int from = popLsb(myBishops);
@@ -516,8 +466,8 @@ static void generatePseudoLegalMoves(const Board &board,
     appendMoves(attacks, from);
   }
 
+  // Rook Moves
   uint64_t myRooks = bb_of(board, side == WHITE ? WROOK : BROOK);
-
   while (myRooks)
   {
     int from = popLsb(myRooks);
@@ -526,8 +476,8 @@ static void generatePseudoLegalMoves(const Board &board,
     appendMoves(attacks, from);
   }
 
+  // Queen Moves
   uint64_t myQueens = bb_of(board, side == WHITE ? WQUEEN : BQUEEN);
-
   while (myQueens)
   {
     int from = popLsb(myQueens);
@@ -539,207 +489,9 @@ static void generatePseudoLegalMoves(const Board &board,
     appendMoves(attacks, from);
   }
 
+  // Pawn Moves
   generatePawnMoves(board, side, pseudoMoves);
 }
-
-/*
-// ---------------------------------------------------------
-// 1.2.1 — Knights
-// ---------------------------------------------------------
-static void generateKnightMoves(const Board &board, Side side, MoveList &pseudoMoves)
-{
-  uint64_t myKnights = bb_of(board, side == WHITE ? WKNIGHT : BKNIGHT);
-  if (!myKnights)
-    return;
-
-  uint64_t myOcc = occ_side(board, side);
-  uint64_t oppOcc = occ_side(board, 1 - side);
-
-  while (myKnights)
-  {
-    int from = popLsb(myKnights);
-    uint64_t targets = knightAttacks[from] & ~myOcc;
-
-    uint64_t quiets = targets & ~oppOcc;
-    uint64_t captures = targets & oppOcc;
-
-    uint64_t bb = quiets;
-    while (bb)
-    {
-      int to = popLsb(bb);
-      Move m(from, to, MF_QUIET, EMPTY, EMPTY);
-      pseudoMoves.add(m);
-    }
-
-    bb = captures;
-    while (bb)
-    {
-      int to = popLsb(bb);
-      PieceType captured = getCapturedPieceType(board, to);
-      Move m(from, to, MF_CAPTURE, EMPTY, captured);
-      pseudoMoves.add(m);
-    }
-  }
-}
-
-// ---------------------------------------------------------
-// 1.2.1 — King (no castling yet; just one-step moves)
-// ---------------------------------------------------------
-static void generateKingMoves(const Board &board, Side side, MoveList &pseudoMoves)
-{
-  uint64_t myKing = bb_of(board, side == WHITE ? WKING : BKING);
-  if (!myKing)
-    return;
-
-  uint64_t myOcc = occ_side(board, side);
-  uint64_t oppOcc = occ_side(board, 1 - side);
-
-  int from = __builtin_ctzll(myKing); // only one king
-  uint64_t targets = kingAttacks[from] & ~myOcc;
-
-  uint64_t quiets = targets & ~oppOcc;
-  uint64_t captures = targets & oppOcc;
-
-  uint64_t bb = quiets;
-  while (bb)
-  {
-    int to = popLsb(bb);
-    Move m(from, to, MF_QUIET, EMPTY, EMPTY);
-    pseudoMoves.add(m);
-  }
-
-  bb = captures;
-  while (bb)
-  {
-    int to = popLsb(bb);
-    PieceType captured = getCapturedPieceType(board, to);
-    Move m(from, to, MF_CAPTURE, EMPTY, captured);
-    pseudoMoves.add(m);
-  }
-
-  // Castling will be added later (pseudolegal: check only empty & rights)
-}
-
-// ---------------------------------------------------------
-// 1.2.2 — Bishops
-// ---------------------------------------------------------
-static void generateBishopMoves(const Board &board, Side side, MoveList &pseudoMoves)
-{
-  uint64_t myBishops = bb_of(board, side == WHITE ? WBISHOP : BBISHOP);
-  if (!myBishops)
-    return;
-
-  uint64_t myOcc = occ_side(board, side);
-  uint64_t oppOcc = occ_side(board, 1 - side);
-
-  while (myBishops)
-  {
-    int from = popLsb(myBishops);
-    uint64_t attacks = bishopAttacks(from, occ_all(board)) & ~myOcc;
-
-    uint64_t quiets = attacks & ~oppOcc;
-    uint64_t captures = attacks & oppOcc;
-
-    uint64_t bb = quiets;
-    while (bb)
-    {
-      int to = popLsb(bb);
-      Move m(from, to, MF_QUIET, EMPTY, EMPTY);
-      pseudoMoves.add(m);
-    }
-
-    bb = captures;
-    while (bb)
-    {
-      int to = popLsb(bb);
-      PieceType captured = getCapturedPieceType(board, to);
-      Move m(from, to, MF_CAPTURE, EMPTY, captured);
-      pseudoMoves.add(m);
-    }
-  }
-}
-
-// ---------------------------------------------------------
-// 1.2.2 — Rooks
-// ---------------------------------------------------------
-static void generateRookMoves(const Board &board, Side side, MoveList &pseudoMoves)
-{
-  uint64_t myRooks = bb_of(board, side == WHITE ? WROOK : BROOK);
-  if (!myRooks)
-    return;
-
-  uint64_t myOcc = occ_side(board, side);
-  uint64_t oppOcc = occ_side(board, 1 - side);
-
-  while (myRooks)
-  {
-    int from = popLsb(myRooks);
-    uint64_t attacks = rookAttacks(from, occ_all(board)) & ~myOcc;
-
-    uint64_t quiets = attacks & ~oppOcc;
-    uint64_t captures = attacks & oppOcc;
-
-    uint64_t bb = quiets;
-    while (bb)
-    {
-      int to = popLsb(bb);
-      Move m(from, to, MF_QUIET, EMPTY, EMPTY);
-      pseudoMoves.add(m);
-    }
-
-    bb = captures;
-    while (bb)
-    {
-      int to = popLsb(bb);
-      PieceType captured = getCapturedPieceType(board, to);
-      Move m(from, to, MF_CAPTURE, EMPTY, captured);
-      pseudoMoves.add(m);
-    }
-  }
-}
-
-// ---------------------------------------------------------
-// 1.2.2 — Queens (bishop + rook)
-// ---------------------------------------------------------
-static void generateQueenMoves(const Board &board, Side side, MoveList &pseudoMoves)
-{
-  uint64_t myQueens = bb_of(board, side == WHITE ? WQUEEN : BQUEEN);
-  if (!myQueens)
-    return;
-
-  uint64_t myOcc = occ_side(board, side);
-  uint64_t oppOcc = occ_side(board, 1 - side);
-
-  while (myQueens)
-  {
-    int from = popLsb(myQueens);
-    uint64_t attacks =
-        (bishopAttacks(from, occ_all(board)) |
-         rookAttacks(from, occ_all(board))) &
-        ~myOcc;
-
-    uint64_t quiets = attacks & ~oppOcc;
-    uint64_t captures = attacks & oppOcc;
-
-    uint64_t bb = quiets;
-    while (bb)
-    {
-      int to = popLsb(bb);
-      Move m(from, to, MF_QUIET, EMPTY, EMPTY);
-      pseudoMoves.add(m);
-    }
-
-    bb = captures;
-    while (bb)
-    {
-      int to = popLsb(bb);
-      PieceType captured = getCapturedPieceType(board, to);
-      Move m(from, to, MF_CAPTURE, EMPTY, captured);
-      pseudoMoves.add(m);
-    }
-  }
-}
-*/
 
 /**
  * Task 2.1.1 — Check detection.
