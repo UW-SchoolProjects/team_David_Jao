@@ -89,7 +89,6 @@ See LICENSE file for details.
 
 #include "MoveGenerator.h"
 #include "move.h"
-// #include "board.h"
 #include <cassert>
 
 // ---------------------------------------------------------
@@ -98,7 +97,7 @@ See LICENSE file for details.
 
 // Pop least significant bit and return its index (0..63).
 // Uses GCC/Clang builtin; adapt for MSVC if needed.
-static inline int popLsb(uint64_t &bb)
+inline int popLsb(uint64_t &bb)
 {
   assert(bb != 0);
   int idx = __builtin_ctzll(bb);
@@ -107,24 +106,20 @@ static inline int popLsb(uint64_t &bb)
 }
 
 // Convert 0..63 bit index to 0x88 square index.
-static inline int bitIndexTo0x88(int sq)
+constexpr inline int bitIndexTo0x88(int sq)
 {
-  int file = sq % 8;
-  int rank = sq / 8;
-  return (rank << 4) | file; // MAKE_SQUARE(file, rank)
+  return MAKE_SQUARE(sq % 8, sq / 8);
 }
 
 // Convert 0x88 square index to 0..63 bit index.
-static inline int square0x88ToBitIndex(int sq88)
+constexpr inline int square0x88ToBitIndex(int sq88)
 {
-  int file = sq88 & 7;
-  int rank = sq88 >> 4;
-  return rank * 8 + file;
+  return BB_INDEX(sq88 & 7, sq88 >> 4);
 }
 
 // Get captured piece type (PieceType) on a given 0..63 square,
 // using the mailbox board. Returns EMPTY if no piece.
-static inline PieceType getCapturedPieceType(const Board &board, int toBitIndex)
+inline PieceType getCapturedPieceType(const Board &board, int toBitIndex)
 {
   int sq88 = bitIndexTo0x88(toBitIndex);
   int piece = board.squares[sq88];
@@ -134,7 +129,7 @@ static inline PieceType getCapturedPieceType(const Board &board, int toBitIndex)
 }
 
 // ---------------------------------------------------------
-// External attack tables (to be implemented elsewhere)
+// External attack tables (implemented in attacks.cpp)
 // ---------------------------------------------------------
 
 extern uint64_t knightAttacks[64];
