@@ -142,6 +142,7 @@ void setup_startpos(Board &b) {
     b.ep_square = NO_SQUARE;
     b.halfmove_clock = 0;
     b.fullmove_number = 1;
+    b.side = WHITE;   
     b.zobrist_key = compute_zobrist(b);
 
     rebuild_bitboards(b);

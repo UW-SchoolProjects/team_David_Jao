@@ -120,7 +120,7 @@ void zobrist_init(uint64_t seed) {
 uint64_t compute_zobrist(const Board &b) {
     uint64_t key = 0ULL;
     for (int sq = 0; sq < 128; ++sq) {
-        if IS_ONBOARD(sq) {
+        if (IS_ONBOARD(sq)) {
             int piece = b.squares[sq];
             if (piece != EMPTY) {
                 key ^= Z_PIECE_SQ[piece][sq];
@@ -134,8 +134,19 @@ uint64_t compute_zobrist(const Board &b) {
     key ^= Z_CASTLING[b.castling & 0xF];
 
     if (b.ep_square != NO_SQUARE) {
-        int f = FILE_OF(b.ep_square);
-        key ^= Z_EP_FILE[f];
+        int ep_rank = RANK_OF(b.ep_square);
+        bool ep_capturable = false;
+        if (b.side == WHITE) {
+            // White to move can capture EP only if EP square is on rank 5
+            ep_capturable = (ep_rank == 5);
+        } else {
+            // Black to move can capture EP only if EP square is on rank 2
+            ep_capturable = (ep_rank == 2);
+        }
+        if (ep_capturable) {
+            int f = FILE_OF(b.ep_square);
+            key ^= Z_EP_FILE[f];
+        }
     }
 
     return key;
@@ -143,13 +154,18 @@ uint64_t compute_zobrist(const Board &b) {
 
 // there is currently no code for handeling change for promotions, en-passant capture, rook movement during castling, or EP/castling state changes
 void zobrist_update_move(Board &b, int from, int to, int moved, int captured) {
+    // Remove mover from from-square
     b.zobrist_key ^= Z_PIECE_SQ[moved][from];
-    b.zobrist_key ^= Z_PIECE_SQ[moved][to];
 
+    // If a capture occurred, remove the captured piece from the to-square first
     if (captured != EMPTY) {
         b.zobrist_key ^= Z_PIECE_SQ[captured][to];
     }
 
+    // Add mover to to-square
+    b.zobrist_key ^= Z_PIECE_SQ[moved][to];
+
+    // Toggle side-to-move
     b.zobrist_key ^= Z_SIDE;
 }
 
@@ -159,33 +175,59 @@ void zobrist_update_promotion(Board &b, int to, int moved, int promo_piece) {
     b.zobrist_key ^= Z_PIECE_SQ[promo_piece][to];
 }
 
-void zobrist_update_en_passant(Board &b, int to, int moved) {
-    int cap_sq = (color_of(moved) == WHITE) ? (to - 16) : (to + 16);
-    int victim = (color_of(moved) == WHITE) ? BPAWN : WPAWN;
-
-    // Remove the captured pawn from its actual square
-    b.zobrist_key ^= Z_PIECE_SQ[victim][cap_sq];
-}
+void zobrist_update_en_passant(Board &b, int from, int to, int moved) {
+     int cap_sq = (color_of(moved) == WHITE) ? (to - 16) : (to + 16);
+     int victim = (color_of(moved) == WHITE) ? BPAWN : WPAWN;
+ 
+    // Remove mover from from-square
+    b.zobrist_key ^= Z_PIECE_SQ[moved][from];
+    // Add mover to to-square
+    b.zobrist_key ^= Z_PIECE_SQ[moved][to];
+     // Remove the captured pawn from its actual square
+     b.zobrist_key ^= Z_PIECE_SQ[victim][cap_sq];
+    // Toggle side-to-move
+    b.zobrist_key ^= Z_SIDE;
+ }
 
 void zobrist_update_castling_move(Board &b, CastingType type) {
     if (type == WCK) {
-        int rook_from = MAKE_SQUARE(7, 0);
-        int rook_to   = MAKE_SQUARE(5, 0);
+        int king_from = MAKE_SQUARE(4, 0); // e1
+        int king_to   = MAKE_SQUARE(6, 0); // g1
+        b.zobrist_key ^= Z_PIECE_SQ[WKING][king_from];
+        b.zobrist_key ^= Z_PIECE_SQ[WKING][king_to];
+
+        int rook_from = MAKE_SQUARE(7, 0); // h1
+        int rook_to   = MAKE_SQUARE(5, 0); // f1
         b.zobrist_key ^= Z_PIECE_SQ[WROOK][rook_from];
         b.zobrist_key ^= Z_PIECE_SQ[WROOK][rook_to];
     } else if (type == WCQ) {
-        int rook_from = MAKE_SQUARE(0, 0);
-        int rook_to   = MAKE_SQUARE(3, 0);
+        int king_from = MAKE_SQUARE(4, 0); // e1
+        int king_to   = MAKE_SQUARE(2, 0); // c1
+        b.zobrist_key ^= Z_PIECE_SQ[WKING][king_from];
+        b.zobrist_key ^= Z_PIECE_SQ[WKING][king_to];
+
+        int rook_from = MAKE_SQUARE(0, 0); // a1
+        int rook_to   = MAKE_SQUARE(3, 0); // d1
         b.zobrist_key ^= Z_PIECE_SQ[WROOK][rook_from];
         b.zobrist_key ^= Z_PIECE_SQ[WROOK][rook_to];
     } else if (type == BCK) {
-        int rook_from = MAKE_SQUARE(7, 7);
-        int rook_to   = MAKE_SQUARE(5, 7);
+        int king_from = MAKE_SQUARE(4, 7); // e8
+        int king_to   = MAKE_SQUARE(6, 7); // g8
+        b.zobrist_key ^= Z_PIECE_SQ[BKING][king_from];
+        b.zobrist_key ^= Z_PIECE_SQ[BKING][king_to];
+
+        int rook_from = MAKE_SQUARE(7, 7); // h8
+        int rook_to   = MAKE_SQUARE(5, 7); // f8
         b.zobrist_key ^= Z_PIECE_SQ[BROOK][rook_from];
         b.zobrist_key ^= Z_PIECE_SQ[BROOK][rook_to];
     } else if (type == BCQ) {
-        int rook_from = MAKE_SQUARE(0, 0);
-        int rook_to   = MAKE_SQUARE(3, 0);
+        int king_from = MAKE_SQUARE(4, 7); // e8
+        int king_to   = MAKE_SQUARE(2, 7); // c8
+        b.zobrist_key ^= Z_PIECE_SQ[BKING][king_from];
+        b.zobrist_key ^= Z_PIECE_SQ[BKING][king_to];
+
+        int rook_from = MAKE_SQUARE(0, 7); // a8
+        int rook_to   = MAKE_SQUARE(3, 7); // d8
         b.zobrist_key ^= Z_PIECE_SQ[BROOK][rook_from];
         b.zobrist_key ^= Z_PIECE_SQ[BROOK][rook_to];
     }

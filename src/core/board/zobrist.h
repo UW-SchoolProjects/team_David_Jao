@@ -114,7 +114,7 @@ extern uint64_t rng_state[2];
 // Must be called ONCE at engine startup (before setup_startpos()).
 void zobrist_init(uint64_t seed = 0x9E3779B97F4A7C15ULL);
 
-enum CastingType {
+enum CastlingType {
     WCK = 0,
     WCQ = 1,
     BCK = 2,
@@ -132,10 +132,13 @@ uint64_t compute_zobrist(const Board &b);
 void zobrist_update_move(Board &b, int from, int to, int moved, int captured);
 
 // Updates the Zobrist key after a promotion
-void zobrist_update_promotion(Board &b, int from, int to, int moved, int promo_piece);
+void zobrist_update_promotion(Board &b, int to, int moved, int promo_piece);
+
+// Updates the Zobrist key after en passant
+void zobrist_update_en_passant(Board &b, int from, int to, int moved);
 
 // Updates the Zobrist key after a castling
-void zobrist_update_castling_move(Board &b, CastingType type);
+void zobrist_update_castling_move(Board &b, CastlingType type);
 
 // Updates the Zobrist key after a casling rights or EP file changed
 void zobrist_update_castling_rights_EP_file(Board &b, int old_castling, int old_ep_square);
