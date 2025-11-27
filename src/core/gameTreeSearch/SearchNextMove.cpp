@@ -206,9 +206,6 @@ Move getBestMove(Board &board, int maxDepth, EvalFn evalFn)
     }
     else
     {
-      // Aspiration window around last score (e.g. ±25 cp)
-      const int ASP_WINDOW = 25;
-
       alpha = bestScore - ASP_WINDOW;
       beta = bestScore + ASP_WINDOW;
 

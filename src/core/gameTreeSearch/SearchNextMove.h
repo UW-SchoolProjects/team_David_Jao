@@ -87,5 +87,6 @@ See LICENSE file for details.
 #include "../nextMoveGeneration/move.h"
 #include "../nextMoveGeneration/MoveGenerator.h"
 #include "eval.h"
+#include "SearchConfig.h"
 
 Move getBestMove(Board &board, int maxDepth, EvalFn evalFn);
