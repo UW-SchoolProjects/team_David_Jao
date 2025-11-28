@@ -91,7 +91,7 @@ See LICENSE file for details.
 #include <string>
 #include <iosfwd>
 
-#include "../../main/board.h"
+#include "../board/board.h"
 
 enum MoveFlag : uint8_t
 {

@@ -88,7 +88,7 @@ See LICENSE file for details.
 #define MOVE_GENERATION_H
 
 #include <cstdint>
-#include "../../main/board.h"
+#include "../board/board.h"
 #include "move.h"
 
 // Maximum number of moves possible from a single position.
@@ -127,9 +127,6 @@ struct MoveList
  *
  * This is the main entry point that the game tree/search code should call.
  */
-void validMoveGeneration(const Board &board,
-                         Side side,
-                         MoveList &outMoves,
-                         bool captureOnly = false);
+void validMoveGeneration(const Board &board, Side side, MoveList &outMoves, bool captureOnly = false);
 
 #endif // MOVE_GENERATION_H

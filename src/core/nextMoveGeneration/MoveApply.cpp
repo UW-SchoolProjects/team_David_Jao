@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2025 CO456 Team (David Jao Project). 
+Copyright (c) 2025 CO456 Team (David Jao Project).
 All rights reserved.
 
 This source code is part of the CO456 Chess Bot Project.
@@ -87,127 +87,273 @@ Use of this code is permitted for educational and academic purposes only.
 See LICENSE file for details.
 */
 
+#include "MoveApply.h"
+#include "../board/zobrist.h"
+#include <cassert>
 
-#ifndef BOARD_H
-#define BOARD_H
-#include <cstdint>
-using namespace std;
-using U64 = unsigned long long;
+// Global (or static) undo stack and ply counter
+static UndoState history[MAX_PLY];
+static int ply = 0;
 
-
-// --- 0x88 board constants ---
-#define BOARD_SIZE 128
-#define IS_ONBOARD(sq) (!((sq) & 0x88))
-#define RANK_OF(sq) ((sq) >> 4)
-#define FILE_OF(sq) ((sq) & 7)
-#define MAKE_SQUARE(file, rank) (((rank) << 4) | (file))
-#define NO_SQUARE -1
-// Bit index (0..63) uses a1=0, b1=1, ..., h1=7, a2=8, ..., h8=63
-#define BB_INDEX(file, rank)  ((rank) * 8 + (file))
-#define BB_INDEX_FROM_0x88(sq)  ( ((sq) & 7) + 8 * ((sq) >> 4) )   // file + 8*rank
-#define BIT(sq64)  (U64(1) << (sq64))
-#define SQ64_to_0x88(sq)  ( MAKE_SQUARE(FILE_OF(sq), RANK_OF(sq)) ) 
-
-enum Side { 
-    WHITE = 0, 
-    BLACK = 1,
-};
-
-enum PieceType {
-    EMPTY   = 0,
-    PAWN    = 1,
-    KNIGHT  = 2,
-    BISHOP  = 3,
-    ROOK    = 4,
-    QUEEN   = 5,
-    KING    = 6
-};
-
-// idea: for any piece the first bit shows the side and the last 3 bit tells the type of piece it is
-enum Piece {
-    WPAWN   = (WHITE << 3) | PAWN,
-    WKNIGHT = (WHITE << 3) | KNIGHT,
-    WBISHOP = (WHITE << 3) | BISHOP,
-    WROOK   = (WHITE << 3) | ROOK,
-    WQUEEN  = (WHITE << 3) | QUEEN,
-    WKING   = (WHITE << 3) | KING,
-
-    BPAWN   = (BLACK << 3) | PAWN,
-    BKNIGHT = (BLACK << 3) | KNIGHT,
-    BBISHOP = (BLACK << 3) | BISHOP,
-    BROOK   = (BLACK << 3) | ROOK,
-    BQUEEN  = (BLACK << 3) | QUEEN,
-    BKING   = (BLACK << 3) | KING
-};
-
-enum CastlingRights {
-    WKCA = 1,  // White kingside
-    WQCA = 2,  // White queenside
-    BKCA = 4,  // Black kingside
-    BQCA = 8   // Black queenside
-};
-
-struct Board {
-    int squares[BOARD_SIZE];
-    int side;
-    int castling; // Bitmask of castling rights (aka: 王车易位)
-    int ep_square;  // En passant target square (aka: 吃过路兵)
-    int halfmove_clock; // Half-move counter for 50-move rule
-    int fullmove_number; // Full-move count (starts at 1, increments after Black’s move)
-    uint64_t zobrist_key;    // Unique position hash (optional to add now)
-
-    U64 bb_piece[16];
-    U64 bb_side[2];
-    U64 bb_occ;
-};
-
-
-
-// function waiting to be implmented 
-// reintializes the board to it's most natuarl form (not a very importent function for final product)
-void clear_board(Board &b);
-// Initialize the board array and all state fields to the standard chess starting position
-void setup_startpos(Board &b);
-// Checks if a given integer index refers to a valid (on-board) 0x88 square.
-bool is_square_onboard(int sq);
-// prints out the broad so we can actually see what's going on before the UI plugin is implemented into our app (not a very importent function for final product)
-void print_board(const Board &b);
-// builds the bit board
-void rebuild_bitboards(Board& b);
-// it verifies that our incremental bitboard updates match what we’d get if you recomputed from
-bool assert_bb_consistency(const Board& b);
-
-// inline helper function that can be used any where
-// decodes a piece's side
-inline int color_of(int piece) { return piece >> 3; }
-// decodes the type of the piece
-inline int type_of(int piece)  { return piece & 7; }
-// return if the piece is a empty piece
-inline bool is_empty(int piece) { return piece == EMPTY; }
-// check if 2 pieces were on the same side
-inline bool same_color(int a, int b) {
-    return (a != EMPTY && b != EMPTY && color_of(a) == color_of(b));
+static inline void strip_castling_for_square(Board &b, int sq) {
+    // White king and rooks
+    if (sq == MAKE_SQUARE(4, 0)) b.castling &= ~(WKCA | WQCA); // e1 king
+    if (sq == MAKE_SQUARE(0, 0)) b.castling &= ~WQCA;          // a1 rook
+    if (sq == MAKE_SQUARE(7, 0)) b.castling &= ~WKCA;          // h1 rook
+    // Black king and rooks
+    if (sq == MAKE_SQUARE(4, 7)) b.castling &= ~(BKCA | BQCA); // e8 king
+    if (sq == MAKE_SQUARE(0, 7)) b.castling &= ~BQCA;          // a8 rook
+    if (sq == MAKE_SQUARE(7, 7)) b.castling &= ~BKCA;          // h8 rook
 }
 
-inline void bb_set_piece(Board& b, int sq64, int piece) {
-    b.bb_piece[piece] |= BIT(sq64);
-    int c = piece >> 3;                 // color from your encoding
-    b.bb_side[c]      |= BIT(sq64);
-    b.bb_occ          |= BIT(sq64);
+bool make_move(Board &b, const Move &m) {
+    // Decode move
+    const int from64  = m.from();
+    const int to64    = m.to();
+    const int from    = SQ64_to_0x88(from64);
+    const int to      = SQ64_to_0x88(to64);
+    const MoveFlag fl = m.flags();
+
+    // Sanity check: from must be on board and non-empty
+    assert(IS_ONBOARD(from));
+    assert(IS_ONBOARD(to));
+    int moved = b.squares[from];
+    assert(moved != EMPTY);
+
+    Side us   = static_cast<Side>(b.side);
+    Side them = (us == WHITE ? BLACK : WHITE);
+
+    // --- 1) Push undo state ---
+    UndoState &st = history[ply++];
+
+    st.move               = m;
+    st.moved_piece_full   = moved;
+    st.captured_piece_full= 0;
+    st.old_castling       = b.castling;
+    st.old_ep_square      = b.ep_square;
+    st.old_halfmove_clock = b.halfmove_clock;
+    st.old_fullmove_number= b.fullmove_number;
+    st.old_side           = static_cast<Side>(b.side);
+    st.old_zobrist_key    = b.zobrist_key;
+
+    // --- 2) Update clocks ---
+    if (type_of(moved) == PAWN || (fl & MF_CAPTURE)) {
+        b.halfmove_clock = 0;
+    } else {
+        b.halfmove_clock++;
+    }
+
+    if (b.side == BLACK) {
+        b.fullmove_number++;
+    }
+
+    // --- 3) Update EP square and castling rights (board state first) ---
+
+    int old_ep = st.old_ep_square;
+
+    // 3a) EP square
+    b.ep_square = NO_SQUARE;
+    if (fl & MF_DOUBLE_PAWN_PUSH) {
+        int fromRank = RANK_OF(from);
+        int toRank   = RANK_OF(to);
+        int epRank   = (fromRank + toRank) / 2;
+        int file     = FILE_OF(from);
+        b.ep_square  = MAKE_SQUARE(file, epRank);
+    }
+
+    // 3b) Castling rights: moving piece may lose rights
+    strip_castling_for_square(b, from);
+
+    // Capturing a rook on its starting square also loses rights
+    if ((fl & MF_CAPTURE) && !(fl & MF_EN_PASSANT_CAPTURE)) {
+        strip_castling_for_square(b, to);
+    }
+
+    // 3c) Update Zobrist for EP + castling
+    zobrist_update_castling_rights_EP_file(b, st.old_castling, old_ep);
+
+    // --- 4) Handle captures on board + Zobrist ---
+
+    // 4a) En passant capture
+    if (fl & MF_EN_PASSANT_CAPTURE) {
+        int cap_sq = (us == WHITE) ? (to - 16) : (to + 16);
+        int victim = (us == WHITE ? BPAWN : WPAWN);
+        st.captured_piece_full = victim;
+
+        // Board: remove pawn from behind
+        assert(b.squares[cap_sq] == victim);
+        b.squares[cap_sq] = EMPTY;
+
+        // Hash: remove victim from hash
+        zobrist_update_en_passant(b, from, to, moved);
+    }
+    // 4b) Normal capture
+    else if (fl & MF_CAPTURE) {
+        int capturedPiece = b.squares[to];
+        st.captured_piece_full = capturedPiece;
+        // We don't need to clear b.squares[to] here; we will overwrite it
+        // after and Zobrist removal happens in zobrist_update_move().
+    }
+
+    // --- 5) Handle castling rook move on board + Zobrist ---
+
+    if (fl & MF_KING_CASTLE) {
+        if (us == WHITE) {
+            int rook_from = MAKE_SQUARE(7, 0); // h1
+            int rook_to   = MAKE_SQUARE(5, 0); // f1
+            b.squares[rook_to]   = b.squares[rook_from];
+            b.squares[rook_from] = EMPTY;
+            zobrist_update_castling_move(b, WCK);
+        } else {
+            int rook_from = MAKE_SQUARE(7, 7); // h8
+            int rook_to   = MAKE_SQUARE(5, 7); // f8
+            b.squares[rook_to]   = b.squares[rook_from];
+            b.squares[rook_from] = EMPTY;
+            zobrist_update_castling_move(b, BCK);
+        }
+    }
+    else if (fl & MF_QUEEN_CASTLE) {
+        if (us == WHITE) {
+            int rook_from = MAKE_SQUARE(0, 0); // a1
+            int rook_to   = MAKE_SQUARE(3, 0); // d1
+            b.squares[rook_to]   = b.squares[rook_from];
+            b.squares[rook_from] = EMPTY;
+            zobrist_update_castling_move(b, WCQ);
+        } else {
+            int rook_from = MAKE_SQUARE(0, 7); // a8
+            int rook_to   = MAKE_SQUARE(3, 7); // d8
+            b.squares[rook_to]   = b.squares[rook_from];
+            b.squares[rook_from] = EMPTY;
+            zobrist_update_castling_move(b, BCQ);
+        }
+    }
+
+    // --- 6) Move the piece on the board ---
+
+    b.squares[to]   = moved;   // may be overwritten by promotion
+    b.squares[from] = EMPTY;
+
+    // --- 7) Zobrist: piece move + normal capture + side to move ---
+
+    int captured_for_hash = EMPTY;
+    if ((fl & MF_CAPTURE) && !(fl & MF_EN_PASSANT_CAPTURE)) {
+        captured_for_hash = st.captured_piece_full;
+    }
+
+    zobrist_update_move(b, from, to, moved, captured_for_hash);
+
+    // --- 8) Promotion board + hash ---
+
+    if (fl & MF_PROMOTION) {
+        PieceType promoType = m.promotion();
+        int promoPiece = EMPTY;
+
+        if (us == WHITE) {
+            if (promoType == QUEEN)  promoPiece = WQUEEN;
+            else if (promoType == ROOK)   promoPiece = WROOK;
+            else if (promoType == BISHOP) promoPiece = WBISHOP;
+            else if (promoType == KNIGHT) promoPiece = WKNIGHT;
+        } else {
+            if (promoType == QUEEN)  promoPiece = BQUEEN;
+            else if (promoType == ROOK)   promoPiece = BROOK;
+            else if (promoType == BISHOP) promoPiece = BBISHOP;
+            else if (promoType == KNIGHT) promoPiece = BKNIGHT;
+        }
+
+        assert(promoPiece != EMPTY);
+
+        // Board: replace pawn with promoted piece
+        b.squares[to] = promoPiece;
+
+        // Hash: remove pawn@to, add promo@to
+        zobrist_update_promotion(b, to, moved, promoPiece);
+    }
+
+    // --- 9) Update side to move on board ---
+    b.side = them;
+
+    // --- 10) (Optional) legality check ---
+    // If you have a king-in-check detector, you can:
+    //   if (king_is_in_check(b, us)) { unmake_move(b); return false; }
+
+    return true;
 }
 
-inline void bb_clear_piece(Board& b, int sq64, int piece) {
-    b.bb_piece[piece] &= ~BIT(sq64);
-    int c = piece >> 3;
-    b.bb_side[c]      &= ~BIT(sq64);
-    b.bb_occ          &= ~BIT(sq64);
+void unmake_move(Board &b) {
+    assert(ply > 0);
+    UndoState &st = history[--ply];
+
+    // --- 1) Restore scalar state and hash ---
+    b.castling        = st.old_castling;
+    b.ep_square       = st.old_ep_square;
+    b.halfmove_clock  = st.old_halfmove_clock;
+    b.fullmove_number = st.old_fullmove_number;
+    b.side            = st.old_side;
+    b.zobrist_key     = st.old_zobrist_key;
+
+    // --- 2) Rebuild board.squares[] ---
+
+    Move m      = st.move;
+    int from64  = m.from();
+    int to64    = m.to();
+    int from    = SQ64_to_0x88(from64);
+    int to      = SQ64_to_0x88(to64);
+    MoveFlag fl = m.flags();
+
+    int moved   = st.moved_piece_full;
+    int captured= st.captured_piece_full;
+    Side us     = st.old_side; // side that played this move
+
+    // a) Undo promotion: turn promo piece back into pawn on 'to'
+    if (fl & MF_PROMOTION) {
+        b.squares[to] = (us == WHITE ? WPAWN : BPAWN);
+    }
+
+    // b) Undo castling rook move
+    if (fl & MF_KING_CASTLE) {
+        if (us == WHITE) {
+            int rook_from = MAKE_SQUARE(7, 0); // h1
+            int rook_to   = MAKE_SQUARE(5, 0); // f1
+            b.squares[rook_from] = WROOK;
+            b.squares[rook_to]   = EMPTY;
+        } else {
+            int rook_from = MAKE_SQUARE(7, 7); // h8
+            int rook_to   = MAKE_SQUARE(5, 7); // f8
+            b.squares[rook_from] = BROOK;
+            b.squares[rook_to]   = EMPTY;
+        }
+    }
+    else if (fl & MF_QUEEN_CASTLE) {
+        if (us == WHITE) {
+            int rook_from = MAKE_SQUARE(0, 0); // a1
+            int rook_to   = MAKE_SQUARE(3, 0); // d1
+            b.squares[rook_from] = WROOK;
+            b.squares[rook_to]   = EMPTY;
+        } else {
+            int rook_from = MAKE_SQUARE(0, 7); // a8
+            int rook_to   = MAKE_SQUARE(3, 7); // d8
+            b.squares[rook_from] = BROOK;
+            b.squares[rook_to]   = EMPTY;
+        }
+    }
+
+    // c) Undo en-passant capture
+    if (fl & MF_EN_PASSANT_CAPTURE) {
+        int cap_sq = (us == WHITE) ? (to - 16) : (to + 16);
+        int victim = (us == WHITE ? BPAWN : WPAWN);
+
+        b.squares[from] = moved;   // pawn back to original square
+        b.squares[to]   = EMPTY;   // destination becomes empty again
+        b.squares[cap_sq] = victim;
+    }
+    // d) Normal move (with or without normal capture)
+    else {
+        b.squares[from] = moved;
+
+        if (captured != 0) {
+            b.squares[to] = captured;  // restore captured piece
+        } else {
+            b.squares[to] = EMPTY;     // clear destination
+        }
+    }
 }
-
-inline int popcount(U64 x)    { return __builtin_popcountll(x); }
-inline int lsb_index(U64 x)   { return __builtin_ctzll(x); }       // undefined if x==0
-inline int msb_index(U64 x)   { return 63 - __builtin_clzll(x); }  // undefined if x==0
-inline U64 occ_all(const Board& b)        { return b.bb_occ; }
-inline U64 occ_side(const Board& b, int c){ return b.bb_side[c]; }
-inline U64 bb_of(const Board& b, int piece){ return b.bb_piece[piece]; }
-
-#endif
