@@ -497,6 +497,10 @@ bool isInCheck(const Board &board, Side side)
   // 1. Locate our king (as a bitboard and as a 0..63 index)
   U64 myKing = bb_of(board, side == WHITE ? WKING : BKING);
   assert(myKing != 0);
+  if (myKing == 0) {
+    // Defensive fallback in non-assert builds to avoid UB.
+    return false;
+  }
 
   int kingSq = lsb_index(myKing); // 0..63 index
   int rank = kingSq / 8;
