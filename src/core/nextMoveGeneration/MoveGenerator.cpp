@@ -557,16 +557,14 @@ static void validMoveGeneration_ApproachA(const Board &board,
   {
     const Move m = outMoves.moves[i];
 
-    Undo undo;
-    if (!makeMove(board, m, undo))
+    if (!make_move(board, m))
     {
-      // Move is illegal for some structural reason; skip it.
-      continue;
+      continue; // illegal move, do not keep
     }
 
     bool kingInCheck = isInCheck(board, side);
 
-    unmakeMove(board, m, undo);
+    unmake_move(board);
 
     if (!kingInCheck)
     {
