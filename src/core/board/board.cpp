@@ -89,6 +89,7 @@ See LICENSE file for details.
 
 #include "board.h"
 #include <iostream>
+#include "zobrist.h"
 
 using namespace std;
 
@@ -141,7 +142,8 @@ void setup_startpos(Board &b) {
     b.ep_square = NO_SQUARE;
     b.halfmove_clock = 0;
     b.fullmove_number = 1;
-    // b.zobrist_key = output from our hash update routine
+    b.side = WHITE;   
+    b.zobrist_key = compute_zobrist(b);
 
     rebuild_bitboards(b);
 }

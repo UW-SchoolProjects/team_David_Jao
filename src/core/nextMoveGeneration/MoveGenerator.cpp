@@ -608,88 +608,87 @@ bool isInCheck(const Board &board, Side side)
 
 /**
  * Task 2.2 — Forced capture rule.
- * If captureOnly is true and at least one capture exists in `moves`,
+ * If at least one capture exists in `moves`,
  * remove all non-captures.
  */
-static void applyCaptureOnlyFilter(MoveList &moves, bool captureOnly);
+static void applyCaptureOnlyFilter(MoveList &moves)
+{
+  // Nothing to do for empty list
+  if (moves.count == 0)
+    return;
+
+  // 1) First pass: check if there is at least one capture
+  bool hasCapture = false;
+  for (int i = 0; i < moves.count; ++i)
+  {
+    if (moves.moves[i].isCapture())
+    {
+      hasCapture = true;
+      break;
+    }
+  }
+
+  // If no captures exist, we keep all moves (normal chess behavior)
+  if (!hasCapture)
+    return;
+
+  // 2) Second pass: compact the list to only captures (in-place)
+  int writeIdx = 0;
+  for (int i = 0; i < moves.count; ++i)
+  {
+    if (moves.moves[i].isCapture())
+    {
+      moves.moves[writeIdx++] = moves.moves[i];
+    }
+  }
+
+  // Update count to the number of captures kept
+  moves.count = writeIdx;
+}
+
+static void validMoveGeneration_ApproachA(const Board &board,
+                                          Side side,
+                                          MoveList &outMoves)
+{
+  outMoves.clear();
+
+  bool inCheck = isInCheck(board, side);
+
+  // 1) Generate all pseudolegal moves (captures + quiets)
+  generatePseudoLegalMoves(board, side, outMoves);
+
+  // 2) Legalize IN-PLACE:
+  int writeIdx = 0;
+  for (int i = 0; i < outMoves.count; ++i)
+  {
+    const Move m = outMoves.moves[i];
+
+    if (!make_move(board, m))
+    {
+      continue; // illegal move, do not keep
+    }
+
+    bool kingInCheck = isInCheck(board, side);
+
+    unmake_move(board);
+
+    if (!kingInCheck)
+    {
+      // This move is legal in standard chess; keep it in-place.
+      outMoves.moves[writeIdx++] = m;
+    }
+  }
+  outMoves.count = writeIdx;
+
+  // 3) Apply forced-capture rule
+  applyCaptureOnlyFilter(outMoves);
+}
 
 // --- Public API implementation ---
 
 void validMoveGeneration(const Board &board,
                          Side side,
-                         MoveList &outMoves,
-                         bool captureOnly)
+                         MoveList &outMoves)
 {
-  outMoves.clear();
-
-  // 1) Generate all pseudolegal moves for the side.
-  MoveList pseudoMoves;
-  pseudoMoves.clear();
-  generatePseudoLegalMoves(board, side, pseudoMoves);
-
-  // 2) Filter to legal moves by testing for self-check.
-  //    This will eventually use makeMove/unmakeMove + isInCheck.
-  for (int i = 0; i < pseudoMoves.count; ++i)
-  {
-    const Move &m = pseudoMoves.moves[i];
-
-    // TODO (Task 2.1.2):
-    // - Make a copy or use an undo stack with makeMove/unmakeMove.
-    // - Apply the move.
-    // - If the `side` is not in check in the resulting position, keep it.
-    // - Undo the move.
-    //
-    // Pseudocode:
-    //
-    // Board copy = board;
-    // Undo undo;
-    // if (!makeMove(copy, m, undo)) {
-    //     continue; // illegal for some reason
-    // }
-    // if (!isInCheck(copy, side)) {
-    //     outMoves.add(m);
-    // }
-
-    // TEMPORARY placeholder to keep the function compiling:
-    // Remove this once you implement make-move + legality.
-    (void)m; // suppress unused warning
-  }
-
-  // 3) Apply the optional "capture-only" variant rule.
-  applyCaptureOnlyFilter(outMoves, captureOnly);
-}
-
-static bool isInCheck(const Board & /*board*/, Side /*side*/)
-{
-  // TODO: Task 2.1.1 — attack detection onto king square.
-  // This should reuse the same attack primitives used in movegen.
-  return false;
-}
-
-static void applyCaptureOnlyFilter(MoveList &moves, bool captureOnly)
-{
-  if (!captureOnly || moves.empty())
-  {
-    return;
-  }
-
-  // First pass: count captures.
-  MoveList captures;
-  captures.clear();
-
-  for (int i = 0; i < moves.count; ++i)
-  {
-    const Move &m = moves.moves[i];
-
-    // TODO: Once Move has isCapture(), use it here.
-    // if (m.isCapture()) captures.add(m);
-
-    (void)m; // placeholder
-  }
-
-  // If any capture exists, replace moves with captures.
-  if (!captures.empty())
-  {
-    moves = captures;
-  }
+  validMoveGeneration_ApproachA(board, side, outMoves);
 }
