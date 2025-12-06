@@ -84,9 +84,14 @@ Use of this code is permitted for educational and academic purposes only.
 See LICENSE file for details.
 */
 
+#ifndef SEARCH_NEXT_MOVE_H
+#define SEARCH_NEXT_MOVE_H
+
 #include "../nextMoveGeneration/move.h"
 #include "../nextMoveGeneration/MoveGenerator.h"
 #include "eval.h"
 #include "SearchConfig.h"
 
 Move getBestMove(Board &board, int maxDepth, EvalFn evalFn);
+
+#endif
