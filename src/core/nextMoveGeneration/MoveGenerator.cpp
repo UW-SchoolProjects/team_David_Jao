@@ -492,92 +492,203 @@ static void generatePseudoLegalMoves(const Board &board,
  * Task 2.1.1 — Check detection.
  * Returns true if `side`'s king is currently in check.
  */
-static bool isInCheck(const Board &board, Side side);
+bool isInCheck(const Board &board, Side side)
+{
+  // 1. Locate our king (as a bitboard and as a 0..63 index)
+  U64 myKing = bb_of(board, side == WHITE ? WKING : BKING);
+  assert(myKing != 0);
+  if (myKing == 0) {
+    // Defensive fallback in non-assert builds to avoid UB.
+    return false;
+  }
+
+  int kingSq = lsb_index(myKing); // 0..63 index
+  int rank = kingSq / 8;
+  int file = kingSq % 8;
+
+  // 2. Basic occupancy and side setup
+  Side opp = (side == WHITE ? BLACK : WHITE);
+  U64 occAll = occ_all(board);
+
+  // 3. Pawn attacks onto king square
+  {
+    U64 oppPawns = bb_of(board, (opp == WHITE ? WPAWN : BPAWN));
+
+    // We work "backwards": from the king square, which squares
+    // could contain an enemy pawn that attacks this square?
+
+    if (opp == WHITE)
+    {
+      // White pawns move up (towards higher ranks) and capture +7 / +9.
+      // So a white pawn that attacks kingSq must sit on kingSq-7 or kingSq-9.
+      if (rank > 0)
+      {
+        if (file > 0)
+        {
+          int fromSq = kingSq - 9;
+          if (fromSq >= 0 && (oppPawns & BIT(fromSq)))
+            return true;
+        }
+        if (file < 7)
+        {
+          int fromSq = kingSq - 7;
+          if (fromSq >= 0 && (oppPawns & BIT(fromSq)))
+            return true;
+        }
+      }
+    }
+    else
+    {
+      // opp == BLACK
+      // Black pawns move down (towards lower ranks) and capture -7 / -9.
+      // So a black pawn that attacks kingSq must sit on kingSq+7 or kingSq+9.
+      if (rank < 7)
+      {
+        if (file > 0)
+        {
+          int fromSq = kingSq + 7;
+          if (fromSq < 64 && (oppPawns & BIT(fromSq)))
+            return true;
+        }
+        if (file < 7)
+        {
+          int fromSq = kingSq + 9;
+          if (fromSq < 64 && (oppPawns & BIT(fromSq)))
+            return true;
+        }
+      }
+    }
+  }
+
+  // 4. Knight attacks
+  {
+    U64 oppKnights = bb_of(board, (opp == WHITE ? WKNIGHT : BKNIGHT));
+    if (knightAttacks[kingSq] & oppKnights)
+      return true;
+  }
+
+  // 5. Diagonal sliders: bishops and queens
+  {
+    U64 oppBishopsQueens =
+        bb_of(board, (opp == WHITE ? WBISHOP : BBISHOP)) |
+        bb_of(board, (opp == WHITE ? WQUEEN : BQUEEN));
+
+    if (oppBishopsQueens)
+    {
+      U64 attacks = bishopAttacks(kingSq, occAll);
+      if (attacks & oppBishopsQueens)
+        return true;
+    }
+  }
+
+  // 6. Orthogonal sliders: rooks and queens
+  {
+    U64 oppRooksQueens =
+        bb_of(board, (opp == WHITE ? WROOK : BROOK)) |
+        bb_of(board, (opp == WHITE ? WQUEEN : BQUEEN));
+
+    if (oppRooksQueens)
+    {
+      U64 attacks = rookAttacks(kingSq, occAll);
+      if (attacks & oppRooksQueens)
+        return true;
+    }
+  }
+
+  // 7. Opponent king adjacency (illegal to have kings touching)
+  {
+    U64 oppKing = bb_of(board, (opp == WHITE ? WKING : BKING));
+    if (kingAttacks[kingSq] & oppKing)
+      return true;
+  }
+
+  // 8. No attackers found
+  return false;
+}
 
 /**
  * Task 2.2 — Forced capture rule.
- * If captureOnly is true and at least one capture exists in `moves`,
+ * If at least one capture exists in `moves`,
  * remove all non-captures.
  */
-static void applyCaptureOnlyFilter(MoveList &moves, bool captureOnly);
+static void applyCaptureOnlyFilter(MoveList &moves)
+{
+  // Nothing to do for empty list
+  if (moves.count == 0)
+    return;
+
+  // 1) First pass: check if there is at least one capture
+  bool hasCapture = false;
+  for (int i = 0; i < moves.count; ++i)
+  {
+    if (moves.moves[i].isCapture())
+    {
+      hasCapture = true;
+      break;
+    }
+  }
+
+  // If no captures exist, we keep all moves (normal chess behavior)
+  if (!hasCapture)
+    return;
+
+  // 2) Second pass: compact the list to only captures (in-place)
+  int writeIdx = 0;
+  for (int i = 0; i < moves.count; ++i)
+  {
+    if (moves.moves[i].isCapture())
+    {
+      moves.moves[writeIdx++] = moves.moves[i];
+    }
+  }
+
+  // Update count to the number of captures kept
+  moves.count = writeIdx;
+}
+
+static void validMoveGeneration_ApproachA(const Board &board,
+                                          Side side,
+                                          MoveList &outMoves)
+{
+  outMoves.clear();
+
+  bool inCheck = isInCheck(board, side);
+
+  // 1) Generate all pseudolegal moves (captures + quiets)
+  generatePseudoLegalMoves(board, side, outMoves);
+
+  // 2) Legalize IN-PLACE:
+  int writeIdx = 0;
+  for (int i = 0; i < outMoves.count; ++i)
+  {
+    const Move m = outMoves.moves[i];
+
+    if (!make_move(board, m))
+    {
+      continue; // illegal move, do not keep
+    }
+
+    bool kingInCheck = isInCheck(board, side);
+
+    unmake_move(board);
+
+    if (!kingInCheck)
+    {
+      // This move is legal in standard chess; keep it in-place.
+      outMoves.moves[writeIdx++] = m;
+    }
+  }
+  outMoves.count = writeIdx;
+
+  // 3) Apply forced-capture rule
+  applyCaptureOnlyFilter(outMoves);
+}
 
 // --- Public API implementation ---
 
 void validMoveGeneration(const Board &board,
                          Side side,
-                         MoveList &outMoves,
-                         bool captureOnly)
+                         MoveList &outMoves)
 {
-  outMoves.clear();
-
-  // 1) Generate all pseudolegal moves for the side.
-  MoveList pseudoMoves;
-  pseudoMoves.clear();
-  generatePseudoLegalMoves(board, side, pseudoMoves);
-
-  // 2) Filter to legal moves by testing for self-check.
-  //    This will eventually use makeMove/unmakeMove + isInCheck.
-  for (int i = 0; i < pseudoMoves.count; ++i)
-  {
-    const Move &m = pseudoMoves.moves[i];
-
-    // TODO (Task 2.1.2):
-    // - Make a copy or use an undo stack with makeMove/unmakeMove.
-    // - Apply the move.
-    // - If the `side` is not in check in the resulting position, keep it.
-    // - Undo the move.
-    //
-    // Pseudocode:
-    //
-    // Board copy = board;
-    // Undo undo;
-    // if (!makeMove(copy, m, undo)) {
-    //     continue; // illegal for some reason
-    // }
-    // if (!isInCheck(copy, side)) {
-    //     outMoves.add(m);
-    // }
-
-    // TEMPORARY placeholder to keep the function compiling:
-    // Remove this once you implement make-move + legality.
-    (void)m; // suppress unused warning
-  }
-
-  // 3) Apply the optional "capture-only" variant rule.
-  applyCaptureOnlyFilter(outMoves, captureOnly);
-}
-
-static bool isInCheck(const Board & /*board*/, Side /*side*/)
-{
-  // TODO: Task 2.1.1 — attack detection onto king square.
-  // This should reuse the same attack primitives used in movegen.
-  return false;
-}
-
-static void applyCaptureOnlyFilter(MoveList &moves, bool captureOnly)
-{
-  if (!captureOnly || moves.empty())
-  {
-    return;
-  }
-
-  // First pass: count captures.
-  MoveList captures;
-  captures.clear();
-
-  for (int i = 0; i < moves.count; ++i)
-  {
-    const Move &m = moves.moves[i];
-
-    // TODO: Once Move has isCapture(), use it here.
-    // if (m.isCapture()) captures.add(m);
-
-    (void)m; // placeholder
-  }
-
-  // If any capture exists, replace moves with captures.
-  if (!captures.empty())
-  {
-    moves = captures;
-  }
+  validMoveGeneration_ApproachA(board, side, outMoves);
 }

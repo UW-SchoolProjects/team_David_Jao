@@ -89,6 +89,7 @@ See LICENSE file for details.
 
 #include "attacks.h"
 #include <cassert>
+#include <cstdint>
 
 uint64_t knightAttacks[64];
 uint64_t kingAttacks[64];
@@ -153,152 +154,270 @@ void initAttackTables()
   }
 }
 
-/**
- * Sliding attacks: Bishops
- *
- * We "ray trace" in 4 diagonal directions until:
- *  - We fall off the board
- *  - Or hit an occupied square (included, then stop in that direction)
- */
+namespace
+{
+
+  using U64 = uint64_t;
+
+  // -------- Magic data --------
+
+  // Max number of relevant bits per square (enough for all squares)
+  constexpr int BISHOP_MAX_RELEVANT_BITS = 13;
+  constexpr int ROOK_MAX_RELEVANT_BITS = 12;
+
+  // Per-square masks: which squares along the rays can act as blockers
+  U64 bishopMask[64];
+  U64 rookMask[64];
+
+  // Per-square number of relevant bits (popcount of mask)
+  int bishopRelevantBits[64];
+  int rookRelevantBits[64];
+
+  // Magic multipliers (TO BE FILLED with known-good constants)
+  U64 bishopMagic[64] = {
+      /* TODO: fill with precomputed bishop magic numbers */
+  };
+
+  U64 rookMagic[64] = {
+      /* TODO: fill with precomputed rook magic numbers */
+  };
+
+  // Attack tables: [square][hash_key]
+  U64 bishopAttackTable[64][1 << BISHOP_MAX_RELEVANT_BITS];
+  U64 rookAttackTable[64][1 << ROOK_MAX_RELEVANT_BITS];
+
+  // -------- Old ray-trace versions (used for table building only) --------
+
+  U64 bishopAttacksOnTheFly(int sq, U64 occ)
+  {
+    U64 attacks = 0ULL;
+    int rank = sq / 8;
+    int file = sq % 8;
+
+    // NE
+    for (int r = rank + 1, f = file + 1; r < 8 && f < 8; ++r, ++f)
+    {
+      int to = r * 8 + f;
+      attacks |= bit(to);
+      if (occ & bit(to))
+        break;
+    }
+    // NW
+    for (int r = rank + 1, f = file - 1; r < 8 && f >= 0; ++r, --f)
+    {
+      int to = r * 8 + f;
+      attacks |= bit(to);
+      if (occ & bit(to))
+        break;
+    }
+    // SE
+    for (int r = rank - 1, f = file + 1; r >= 0 && f < 8; --r, ++f)
+    {
+      int to = r * 8 + f;
+      attacks |= bit(to);
+      if (occ & bit(to))
+        break;
+    }
+    // SW
+    for (int r = rank - 1, f = file - 1; r >= 0 && f >= 0; --r, --f)
+    {
+      int to = r * 8 + f;
+      attacks |= bit(to);
+      if (occ & bit(to))
+        break;
+    }
+    return attacks;
+  }
+
+  U64 rookAttacksOnTheFly(int sq, U64 occ)
+  {
+    U64 attacks = 0ULL;
+    int rank = sq / 8;
+    int file = sq % 8;
+
+    // North
+    for (int r = rank + 1, f = file; r < 8; ++r)
+    {
+      int to = r * 8 + f;
+      attacks |= bit(to);
+      if (occ & bit(to))
+        break;
+    }
+    // South
+    for (int r = rank - 1, f = file; r >= 0; --r)
+    {
+      int to = r * 8 + f;
+      attacks |= bit(to);
+      if (occ & bit(to))
+        break;
+    }
+    // East
+    for (int r = rank, f = file + 1; f < 8; ++f)
+    {
+      int to = r * 8 + f;
+      attacks |= bit(to);
+      if (occ & bit(to))
+        break;
+    }
+    // West
+    for (int r = rank, f = file - 1; f >= 0; --f)
+    {
+      int to = r * 8 + f;
+      attacks |= bit(to);
+      if (occ & bit(to))
+        break;
+    }
+    return attacks;
+  }
+
+  // -------- Mask builders (squares that can hold blockers) --------
+
+  U64 bishopMaskForSquare(int sq)
+  {
+    U64 mask = 0ULL;
+    int rank = sq / 8;
+    int file = sq % 8;
+
+    // We stop one square before the edge in each direction,
+    // because edge squares do not have "beyond" squares affected by blockers.
+    // NE
+    for (int r = rank + 1, f = file + 1; r < 7 && f < 7; ++r, ++f)
+      mask |= bit(r * 8 + f);
+    // NW
+    for (int r = rank + 1, f = file - 1; r < 7 && f > 0; ++r, --f)
+      mask |= bit(r * 8 + f);
+    // SE
+    for (int r = rank - 1, f = file + 1; r > 0 && f < 7; --r, ++f)
+      mask |= bit(r * 8 + f);
+    // SW
+    for (int r = rank - 1, f = file - 1; r > 0 && f > 0; --r, --f)
+      mask |= bit(r * 8 + f);
+
+    return mask;
+  }
+
+  U64 rookMaskForSquare(int sq)
+  {
+    U64 mask = 0ULL;
+    int rank = sq / 8;
+    int file = sq % 8;
+
+    // North (exclude edge rank 7)
+    for (int r = rank + 1; r < 7; ++r)
+      mask |= bit(r * 8 + file);
+    // South (exclude edge rank 0)
+    for (int r = rank - 1; r > 0; --r)
+      mask |= bit(r * 8 + file);
+    // East (exclude edge file 7)
+    for (int f = file + 1; f < 7; ++f)
+      mask |= bit(rank * 8 + f);
+    // West (exclude edge file 0)
+    for (int f = file - 1; f > 0; --f)
+      mask |= bit(rank * 8 + f);
+
+    return mask;
+  }
+
+  // Popcount helper
+  int popcount64(U64 x)
+  {
+    return __builtin_popcountll(x);
+  }
+
+  // -------- Enumerate all blocker subsets for a given mask --------
+
+  U64 indexToBlockers(U64 mask, int index)
+  {
+    // Enumerate subsets of mask in "index" order
+    U64 blockers = 0ULL;
+    int bitCount = popcount64(mask);
+    for (int i = 0; i < bitCount; ++i)
+    {
+      // get i-th bit position in mask
+      int bitPos = __builtin_ctzll(mask);
+      mask &= mask - 1; // pop lsb
+
+      if (index & (1 << i))
+      {
+        blockers |= bit(bitPos);
+      }
+    }
+    return blockers;
+  }
+
+  // -------- Initialization of magic tables --------
+
+  void initMagicTables()
+  {
+    // Build masks and relevant bits
+    for (int sq = 0; sq < 64; ++sq)
+    {
+      bishopMask[sq] = bishopMaskForSquare(sq);
+      rookMask[sq] = rookMaskForSquare(sq);
+
+      bishopRelevantBits[sq] = popcount64(bishopMask[sq]);
+      rookRelevantBits[sq] = popcount64(rookMask[sq]);
+    }
+
+    // Build bishop attack tables
+    for (int sq = 0; sq < 64; ++sq)
+    {
+      int relBits = bishopRelevantBits[sq];
+      int subsetCount = 1 << relBits;
+      for (int idx = 0; idx < subsetCount; ++idx)
+      {
+        U64 blockers = indexToBlockers(bishopMask[sq], idx);
+        U64 hashKey = (blockers * bishopMagic[sq]) >> (64 - relBits);
+        bishopAttackTable[sq][hashKey] =
+            bishopAttacksOnTheFly(sq, blockers);
+      }
+    }
+
+    // Build rook attack tables
+    for (int sq = 0; sq < 64; ++sq)
+    {
+      int relBits = rookRelevantBits[sq];
+      int subsetCount = 1 << relBits;
+      for (int idx = 0; idx < subsetCount; ++idx)
+      {
+        U64 blockers = indexToBlockers(rookMask[sq], idx);
+        U64 hashKey = (blockers * rookMagic[sq]) >> (64 - relBits);
+        rookAttackTable[sq][hashKey] =
+            rookAttacksOnTheFly(sq, blockers);
+      }
+    }
+  }
+
+  inline void ensureMagicInitialized()
+  {
+    static bool initialized = false;
+    if (!initialized)
+    {
+      initMagicTables();
+      initialized = true;
+    }
+  }
+
+} // anonymous namespace
+
 uint64_t bishopAttacks(int sq, uint64_t occ)
 {
   assert(sq >= 0 && sq < 64);
-  uint64_t attacks = 0;
+  ensureMagicInitialized();
 
-  int rank = sq / 8;
-  int file = sq % 8;
-
-  // Direction: NE (up + right)  (dr = +1, df = +1)
-  {
-    int r = rank + 1;
-    int f = file + 1;
-    while (r < 8 && f < 8)
-    {
-      int to = r * 8 + f;
-      attacks |= bit(to);
-      if (occ & bit(to))
-        break; // stop at first blocker
-      ++r;
-      ++f;
-    }
-  }
-
-  // Direction: NW (up + left)   (dr = +1, df = -1)
-  {
-    int r = rank + 1;
-    int f = file - 1;
-    while (r < 8 && f >= 0)
-    {
-      int to = r * 8 + f;
-      attacks |= bit(to);
-      if (occ & bit(to))
-        break;
-      ++r;
-      --f;
-    }
-  }
-
-  // Direction: SE (down + right) (dr = -1, df = +1)
-  {
-    int r = rank - 1;
-    int f = file + 1;
-    while (r >= 0 && f < 8)
-    {
-      int to = r * 8 + f;
-      attacks |= bit(to);
-      if (occ & bit(to))
-        break;
-      --r;
-      ++f;
-    }
-  }
-
-  // Direction: SW (down + left) (dr = -1, df = -1)
-  {
-    int r = rank - 1;
-    int f = file - 1;
-    while (r >= 0 && f >= 0)
-    {
-      int to = r * 8 + f;
-      attacks |= bit(to);
-      if (occ & bit(to))
-        break;
-      --r;
-      --f;
-    }
-  }
-
-  return attacks;
+  U64 blockers = occ & bishopMask[sq];
+  int relBits = bishopRelevantBits[sq];
+  U64 key = (blockers * bishopMagic[sq]) >> (64 - relBits);
+  return bishopAttackTable[sq][key];
 }
 
-/**
- * Sliding attacks: Rooks
- *
- * Rays in 4 orthogonal directions (N, E, S, W) with the same rule: stop at first blocker.
- */
 uint64_t rookAttacks(int sq, uint64_t occ)
 {
   assert(sq >= 0 && sq < 64);
-  uint64_t attacks = 0;
+  ensureMagicInitialized();
 
-  int rank = sq / 8;
-  int file = sq % 8;
-
-  // Direction: North (up) (dr = +1, df = 0)
-  {
-    int r = rank + 1;
-    int f = file;
-    while (r < 8)
-    {
-      int to = r * 8 + f;
-      attacks |= bit(to);
-      if (occ & bit(to))
-        break;
-      ++r;
-    }
-  }
-
-  // Direction: South (down) (dr = -1, df = 0)
-  {
-    int r = rank - 1;
-    int f = file;
-    while (r >= 0)
-    {
-      int to = r * 8 + f;
-      attacks |= bit(to);
-      if (occ & bit(to))
-        break;
-      --r;
-    }
-  }
-
-  // Direction: East (right) (dr = 0, df = +1)
-  {
-    int r = rank;
-    int f = file + 1;
-    while (f < 8)
-    {
-      int to = r * 8 + f;
-      attacks |= bit(to);
-      if (occ & bit(to))
-        break;
-      ++f;
-    }
-  }
-
-  // Direction: West (left) (dr = 0, df = -1)
-  {
-    int r = rank;
-    int f = file - 1;
-    while (f >= 0)
-    {
-      int to = r * 8 + f;
-      attacks |= bit(to);
-      if (occ & bit(to))
-        break;
-      --f;
-    }
-  }
-
-  return attacks;
+  U64 blockers = occ & rookMask[sq];
+  int relBits = rookRelevantBits[sq];
+  U64 key = (blockers * rookMagic[sq]) >> (64 - relBits);
+  return rookAttackTable[sq][key];
 }
