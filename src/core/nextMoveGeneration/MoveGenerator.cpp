@@ -90,6 +90,7 @@ See LICENSE file for details.
 #include "MoveGenerator.h"
 #include "move.h"
 #include <cassert>
+#include "MoveApply.h"
 
 // ---------------------------------------------------------
 // Small bitboard utilities
@@ -646,7 +647,7 @@ static void applyCaptureOnlyFilter(MoveList &moves)
   moves.count = writeIdx;
 }
 
-static void validMoveGeneration_ApproachA(const Board &board,
+static void validMoveGeneration_ApproachA(Board &board,
                                           Side side,
                                           MoveList &outMoves)
 {
@@ -686,7 +687,7 @@ static void validMoveGeneration_ApproachA(const Board &board,
 
 // --- Public API implementation ---
 
-void validMoveGeneration(const Board &board,
+void validMoveGeneration(Board &board,
                          Side side,
                          MoveList &outMoves)
 {
