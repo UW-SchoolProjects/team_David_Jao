@@ -98,7 +98,7 @@ using U64 = unsigned long long;
 // --- 0x88 board constants ---
 #define BOARD_SIZE 128
 #define IS_ONBOARD(sq) (!((sq) & 0x88))
-#define RANK_OF(sq) ((sq) >> 3)
+#define RANK_OF(sq) ((sq) >> 4)
 #define FILE_OF(sq) ((sq) & 7)
 #define MAKE_SQUARE(file, rank) (((rank) << 4) | (file))
 #define NO_SQUARE -1
