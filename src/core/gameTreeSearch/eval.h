@@ -84,8 +84,8 @@ Use of this code is permitted for educational and academic purposes only.
 See LICENSE file for details.
 */
 
-#pragma once
-
+#ifndef EVAL_H
+#define EVAL_H
 #include "../board/board.h" // or whatever header defines Board, Side, etc.
 
 constexpr int SCORE_INF = 3000000;
@@ -100,3 +100,5 @@ int basicEvaluate(const Board &board);
 // You can later add more evals with the same signature:
 // int pstEvaluate(const Board &board);
 // int fancyEvalV2(const Board &board);
+
+#endif

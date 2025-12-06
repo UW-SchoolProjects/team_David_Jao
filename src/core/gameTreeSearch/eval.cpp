@@ -125,7 +125,7 @@ static constexpr int PHASE_PAWN = 0;
 static constexpr int PHASE_KNIGHT = 1;
 static constexpr int PHASE_BISHOP = 1;
 static constexpr int PHASE_ROOK = 2;
-static constexpr int PHASE_QUeen = 4;
+static constexpr int PHASE_QUEEN = 4;
 static constexpr int PHASE_KING = 0;
 
 static constexpr int PHASE_TOTAL = 24; // clamp target 0..24
@@ -137,7 +137,7 @@ static constexpr int PHASE_WEIGHT[7] = {
     PHASE_KNIGHT, // KNIGHT
     PHASE_BISHOP, // BISHOP
     PHASE_ROOK,   // ROOK
-    PHASE_QUeen,  // QUEEN
+    PHASE_QUEEN,  // QUEEN
     PHASE_KING    // KING
 };
 
