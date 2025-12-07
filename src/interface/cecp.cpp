@@ -32,98 +32,6 @@ static inline void sq64_to_file_rank(int sq64, char &fileChar, char &rankChar) {
     rankChar = char('1' + rank);
 }
 
-static int piece_from_fen_char(char c) {
-    switch (c) {
-    case 'P': return WPAWN;
-    case 'N': return WKNIGHT;
-    case 'B': return WBISHOP;
-    case 'R': return WROOK;
-    case 'Q': return WQUEEN;
-    case 'K': return WKING;
-    case 'p': return BPAWN;
-    case 'n': return BKNIGHT;
-    case 'b': return BBISHOP;
-    case 'r': return BROOK;
-    case 'q': return BQUEEN;
-    case 'k': return BKING;
-    default:  return -1;
-    }
-}
-
-static bool load_fen(Board &b, const std::string &fen) {
-    std::istringstream iss(fen);
-    std::string placement, stm, castling, ep;
-    int halfmove = 0;
-    int fullmove = 1;
-
-    if (!(iss >> placement >> stm >> castling >> ep >> halfmove >> fullmove)) {
-        return false;
-    }
-
-    clear_board(b);
-
-    int rank = 7;
-    int file = 0;
-    for (char c : placement) {
-        if (c == '/') {
-            if (file != 8 || rank == 0) return false;
-            --rank;
-            file = 0;
-            continue;
-        }
-        if (std::isdigit(static_cast<unsigned char>(c))) {
-            file += c - '0';
-            if (file > 8) return false;
-            continue;
-        }
-
-        int piece = piece_from_fen_char(c);
-        if (piece == -1 || file >= 8 || rank < 0) return false;
-
-        int sq = MAKE_SQUARE(file, rank);
-        b.squares[sq] = piece;
-        ++file;
-    }
-    if (rank != 0 || file != 8) return false;
-
-    if (stm == "w")      b.side = WHITE;
-    else if (stm == "b") b.side = BLACK;
-    else return false;
-
-    b.castling = 0;
-    if (castling != "-") {
-        for (char c : castling) {
-            switch (c) {
-            case 'K': b.castling |= WKCA; break;
-            case 'Q': b.castling |= WQCA; break;
-            case 'k': b.castling |= BKCA; break;
-            case 'q': b.castling |= BQCA; break;
-            default: return false;
-            }
-        }
-    }
-
-    b.ep_square = NO_SQUARE;
-    if (ep != "-") {
-        if (ep.size() != 2) return false;
-        char fileChar = ep[0];
-        char rankChar = ep[1];
-        if (fileChar < 'a' || fileChar > 'h' || rankChar < '1' || rankChar > '8') return false;
-        int f = fileChar - 'a';
-        int r = rankChar - '1';
-        b.ep_square = MAKE_SQUARE(f, r);
-    }
-
-    if (halfmove < 0) halfmove = 0;
-    if (fullmove < 1) fullmove = 1;
-    b.halfmove_clock = halfmove;
-    b.fullmove_number = fullmove;
-
-    rebuild_bitboards(b);
-    b.zobrist_key = compute_zobrist(b);
-    return true;
-}
-
 // ---------------------------
 // Move conversion helpers
 // ---------------------------
@@ -162,11 +70,8 @@ std::string move_to_uci(const Move &m) {
 // Generate all legal moves under your forced-capture rule
 static void generate_variant_moves(Board &b, MoveList &out) {
     out.clear();
-    // validMoveGeneration already:
-    //  - generates pseudolegal moves
-    //  - filters illegal ones with make_move/unmake_move + isInCheck
-    //  - applies the forced-capture rule
-    validMoveGeneration(b, static_cast<Side>(b.side), out, /*captureOnly=*/true);
+    // Wrapper enforces "must capture if a capture exists".
+    get_variant_moves(b, static_cast<Side>(b.side), out);
 }
 
 bool parse_uci_move(Board &b,

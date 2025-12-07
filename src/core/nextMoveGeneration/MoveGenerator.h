@@ -135,4 +135,11 @@ bool isInCheck(const Board &board, Side side);
  */
 void validMoveGeneration(Board &board, Side side, MoveList &outMoves, bool captureOnly = false);
 
+// Convenience wrapper: generate all legal moves (no capture-only filter).
+void generate_legal_moves(Board &board, Side side, MoveList &outMoves);
+
+// Convenience wrapper: forced-capture variant entry point.
+// If any capture exists, only captures are returned; otherwise all legal moves.
+void get_variant_moves(Board &board, Side side, MoveList &outMoves);
+
 #endif // MOVE_GENERATION_H

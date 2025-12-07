@@ -115,7 +115,7 @@ int search(Board &board,
 
   // --- Generate all legal moves for the side to move ---
   MoveList moves;
-  validMoveGeneration(board, static_cast<Side>(board.side), moves);
+  get_variant_moves(board, static_cast<Side>(board.side), moves);
 
   if (moves.empty())
   {

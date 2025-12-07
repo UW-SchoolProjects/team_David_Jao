@@ -91,6 +91,7 @@ See LICENSE file for details.
 #ifndef BOARD_H
 #define BOARD_H
 #include <cstdint>
+#include <string>
 using namespace std;
 using U64 = unsigned long long;
 
@@ -176,6 +177,12 @@ void print_board(const Board &b);
 void rebuild_bitboards(Board& b);
 // it verifies that our incremental bitboard updates match what we’d get if you recomputed from
 bool assert_bb_consistency(const Board& b);
+
+// Parse a FEN string into the board. Returns false on parse error.
+bool load_fen(Board &b, const std::string &fen);
+
+// Serialize the board into a FEN string.
+std::string dump_fen(const Board &b);
 
 // inline helper function that can be used any where
 // decodes a piece's side

@@ -89,6 +89,8 @@ See LICENSE file for details.
 
 #include "board.h"
 #include <iostream>
+#include <sstream>
+#include <cctype>
 #include "zobrist.h"
 
 using namespace std;
@@ -191,6 +193,157 @@ bool assert_bb_consistency(const Board& b) {
     }
 
     return true;
+}
+
+static int piece_from_fen_char(char c) {
+    switch (c) {
+    case 'P': return WPAWN;
+    case 'N': return WKNIGHT;
+    case 'B': return WBISHOP;
+    case 'R': return WROOK;
+    case 'Q': return WQUEEN;
+    case 'K': return WKING;
+    case 'p': return BPAWN;
+    case 'n': return BKNIGHT;
+    case 'b': return BBISHOP;
+    case 'r': return BROOK;
+    case 'q': return BQUEEN;
+    case 'k': return BKING;
+    default:  return -1;
+    }
+}
+
+bool load_fen(Board &b, const std::string &fen) {
+    std::istringstream iss(fen);
+    std::string placement, stm, castling, ep;
+    int halfmove = 0;
+    int fullmove = 1;
+
+    if (!(iss >> placement >> stm >> castling >> ep >> halfmove >> fullmove)) {
+        return false;
+    }
+
+    clear_board(b);
+
+    int rank = 7;
+    int file = 0;
+    for (char c : placement) {
+        if (c == '/') {
+            if (file != 8 || rank == 0) return false;
+            --rank;
+            file = 0;
+            continue;
+        }
+        if (std::isdigit(static_cast<unsigned char>(c))) {
+            file += c - '0';
+            if (file > 8) return false;
+            continue;
+        }
+
+        int piece = piece_from_fen_char(c);
+        if (piece == -1 || file >= 8 || rank < 0) return false;
+
+        int sq = MAKE_SQUARE(file, rank);
+        b.squares[sq] = piece;
+        ++file;
+    }
+    if (rank != 0 || file != 8) return false;
+
+    if (stm == "w")      b.side = WHITE;
+    else if (stm == "b") b.side = BLACK;
+    else return false;
+
+    b.castling = 0;
+    if (castling != "-") {
+        for (char c : castling) {
+            switch (c) {
+            case 'K': b.castling |= WKCA; break;
+            case 'Q': b.castling |= WQCA; break;
+            case 'k': b.castling |= BKCA; break;
+            case 'q': b.castling |= BQCA; break;
+            default: return false;
+            }
+        }
+    }
+
+    b.ep_square = NO_SQUARE;
+    if (ep != "-") {
+        if (ep.size() != 2) return false;
+        char fileChar = ep[0];
+        char rankChar = ep[1];
+        if (fileChar < 'a' || fileChar > 'h' || rankChar < '1' || rankChar > '8') return false;
+        int f = fileChar - 'a';
+        int r = rankChar - '1';
+        b.ep_square = MAKE_SQUARE(f, r);
+    }
+
+    if (halfmove < 0) halfmove = 0;
+    if (fullmove < 1) fullmove = 1;
+    b.halfmove_clock = halfmove;
+    b.fullmove_number = fullmove;
+
+    rebuild_bitboards(b);
+    b.zobrist_key = compute_zobrist(b);
+    return true;
+}
+
+std::string dump_fen(const Board &b) {
+    std::ostringstream out;
+
+    for (int rank = 7; rank >= 0; --rank) {
+        int empty = 0;
+        for (int file = 0; file < 8; ++file) {
+            int sq = MAKE_SQUARE(file, rank);
+            int piece = b.squares[sq];
+            if (piece == EMPTY) {
+                ++empty;
+                continue;
+            }
+            if (empty > 0) {
+                out << empty;
+                empty = 0;
+            }
+            char c = '?';
+            switch (piece) {
+            case WPAWN:   c = 'P'; break;
+            case WKNIGHT: c = 'N'; break;
+            case WBISHOP: c = 'B'; break;
+            case WROOK:   c = 'R'; break;
+            case WQUEEN:  c = 'Q'; break;
+            case WKING:   c = 'K'; break;
+            case BPAWN:   c = 'p'; break;
+            case BKNIGHT: c = 'n'; break;
+            case BBISHOP: c = 'b'; break;
+            case BROOK:   c = 'r'; break;
+            case BQUEEN:  c = 'q'; break;
+            case BKING:   c = 'k'; break;
+            default:      c = '?'; break;
+            }
+            out << c;
+        }
+        if (empty > 0) out << empty;
+        if (rank != 0) out << '/';
+    }
+
+    out << ' ' << (b.side == WHITE ? 'w' : 'b') << ' ';
+
+    std::string castling;
+    if (b.castling & WKCA) castling.push_back('K');
+    if (b.castling & WQCA) castling.push_back('Q');
+    if (b.castling & BKCA) castling.push_back('k');
+    if (b.castling & BQCA) castling.push_back('q');
+    out << (castling.empty() ? "-" : castling) << ' ';
+
+    if (b.ep_square == NO_SQUARE) {
+        out << "-";
+    } else {
+        int file = FILE_OF(b.ep_square);
+        int rank = RANK_OF(b.ep_square);
+        out << char('a' + file) << char('1' + rank);
+    }
+
+    out << ' ' << b.halfmove_clock << ' ' << b.fullmove_number;
+    return out.str();
 }
 
 bool is_square_onboard(int sq) {
