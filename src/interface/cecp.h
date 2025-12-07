@@ -1,11 +1,9 @@
 /*
-Copyright (c) 2025 CO456 Team (David Jao Project). 
+Copyright (c) 2025 CO456 Team (David Jao Project).
 All rights reserved.
-
 This source code is part of the CO456 Chess Bot Project.
 Unauthorized copying of this file, via any medium, is strictly prohibited.
 Use of this code is permitted for educational and academic purposes only.
-
 -------------------------------------------------------------------------------------------------------------------------------------------
 -------------------------------------------------------::::----==+++--=--------------------------------------------------------------------
 ---------------------------------------------------=-+*##%@@%%#%%%%*%#*+*%%=-=*+-----------------------------------------------------------
@@ -82,76 +80,55 @@ Use of this code is permitted for educational and academic purposes only.
 ---------*@@@@@@@@@@@@@@@@@@@%%%%@@@@@%###+-------=#@@@@%%@@%*=-+-:-====:::::---*@@@%%%%%%%%%%@@@@@@@@@@@@%@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 ---------%@@@@@@@@@@@@@@@@@%%%%%@@@@@@#*++=-------=%@%@@%%@@@--=::::-==-=-:----+@@@@%%%%%%%%%%@@@@@@@@@@@@@%@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 ---------%@@@@@@@@@@@%@@@@@%%%%@@@@@@%#*+=-------+@@%%@@@%%@@%-:::-:----------=@@@@%%%%%%%%%%%@@@@@@@@@@@@@%%@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
-
 © 2025 CO456 Team. Licensed for educational use under the MIT License.
 See LICENSE file for details.
 */
 
-#ifndef ZOBRIST_H
-#define ZOBRIST_H
+#ifndef CECP_H
+#define CECP_H
 
-#include <cstdint>
-#include "board.h"
+#pragma once
 
-// Each piece/square pair has its own random 64-bit key.
-extern uint64_t Z_PIECE_SQ[16][128];
+#include <string>
 
-// Side-to-move key (WHITE or BLACK).
-// XOR this every time the side-to-move toggles.
-extern uint64_t Z_SIDE;
+#include "../core/board/board.h"
+#include "../core/nextMoveGeneration/move.h"
 
-// Castling rights keys for all 16 possible bitmasks (0..15).
-// Each bitmask combination (WKCA/WQCA/BKCA/BQCA) has its own key.
-extern uint64_t Z_CASTLING[16];
+// ---------------------------
+// Engine session / modes
+// ---------------------------
 
-// En passant file keys (only 8 files: a..h).
-// Optional: only include if EP square is capturable.
-extern uint64_t Z_EP_FILE[8];
-
-extern uint64_t rng_state[2];
-
-// Initializes all Zobrist keys with pseudo-random 64-bit numbers.
-// Must be called ONCE at engine startup (before setup_startpos()).
-void zobrist_init(uint64_t seed = 0x9E3779B97F4A7C15ULL);
-
-enum CastlingType {
-    WCK = 0,
-    WCQ = 1,
-    BCK = 2,
-    BCQ = 3,
+enum class EngineMode {
+    FORCE,   // engine plays neither side; just tracks game
+    PLAYING  // engine plays the side currently on move
 };
 
-// Computes the full Zobrist hash for a given board position.
-// This is typically used only during initialization or testing,
-// not during search (incremental updates are much faster).
-uint64_t compute_zobrist(const Board &b);
+struct EngineSession {
+    Board      board;          // current position and state
+    int        side_to_move;   // WHITE or BLACK (same encoding as Board::side)
+    EngineMode mode;           // FORCE or PLAYING
 
-// Updates the Zobrist key incrementally after a move.
-// Normally called inside make_move() and unmake_move().
-// This function toggles individual components (piece on from/to, captures, castling, EP file, and side-to-move).
-void zobrist_update_move(Board &b, int from, int to, int moved, int captured);
+    bool quit_requested = false;
 
-// Updates the Zobrist key after a promotion
-void zobrist_update_promotion(Board &b, int to, int moved, int promo_piece);
+    // clocks in centiseconds (CECP uses centiseconds)
+    int my_time_cs  = 0;       // time left on our clock
+    int opp_time_cs = 0;       // time left on opponent clock
 
-// Updates the Zobrist key after en passant
-void zobrist_update_en_passant(Board &b, int to, int moved);
+    int last_ping_id = 0;
+};
 
-// Updates the Zobrist key after a castling
-void zobrist_update_castling_move(Board &b, CastlingType type);
+// Initialize a fresh session in start position.
+void init_engine_session(EngineSession &sess);
 
-// Updates the Zobrist key after a casling rights or EP file changed
-void zobrist_update_castling_rights_EP_file(Board &b, int old_castling, int old_ep_square);
+// Run the CECP main loop on stdin/stdout.
+void cecp_main_loop(EngineSession &sess);
 
-inline uint64_t zobrist_rand() {
-    uint64_t x = rng_state[0];
-    uint64_t y = rng_state[1];
+// Convert an internal Move to coord-style string like "e2e4",
+// "e7e8q" (promotion), "e1g1" (castling).
+std::string move_to_uci(const Move &m);
 
-    rng_state[0] = y;
-    x ^= x << 23;
-    rng_state[1] = x ^ y ^ (x >> 17) ^ (y >> 26);
+// Parse "e2e4", "e7e8q", etc. into a Move that is legal in `b`.
+bool parse_uci_move(Board &b, const std::string &text, Move &out_move);
 
-    return rng_state[1] + y;
-}
 
-#endif
+#endif // CECP_H

@@ -1,0 +1,297 @@
+#include "cecp.h"
+
+#include <iostream>
+#include <sstream>
+#include <cstdlib>
+#include <cstdio>
+
+#include "../core/nextMoveGeneration/MoveGenerator.h"   // MoveList, validMoveGeneration
+#include "../core/nextMoveGeneration/MoveApply.h"       // make_move, unmake_move
+
+// If you later want to hook in your real search, include those:
+// #include "../core/gameTreeSearch/SearchNextMove.h"
+// #include "../core/gameTreeSearch/SearchConfig.h"
+// #include "../core/gameTreeSearch/eval.h"
+
+// ---------------------------
+// Small helpers
+// ---------------------------
+
+static inline int opposite_side(int s) {
+    return s == WHITE ? BLACK : WHITE;
+}
+
+static inline void sq64_to_file_rank(int sq64, char &fileChar, char &rankChar) {
+    int file = sq64 % 8;
+    int rank = sq64 / 8;
+    fileChar = char('a' + file);
+    rankChar = char('1' + rank);
+}
+
+// ---------------------------
+// Move conversion helpers
+// ---------------------------
+
+std::string move_to_uci(const Move &m) {
+    // Your Move::from()/to() are 0..63 indices.
+    int from64 = m.from();
+    int to64   = m.to();
+
+    char ff, rf, ft, rt;
+    sq64_to_file_rank(from64, ff, rf);
+    sq64_to_file_rank(to64,   ft, rt);
+
+    std::string s;
+    s.reserve(5);
+    s.push_back(ff);
+    s.push_back(rf);
+    s.push_back(ft);
+    s.push_back(rt);
+
+    if (m.isPromotion()) {
+        PieceType pt = m.promotion();
+        char promoChar = 'q';
+        switch (pt) {
+        case KNIGHT: promoChar = 'n'; break;
+        case BISHOP: promoChar = 'b'; break;
+        case ROOK:   promoChar = 'r'; break;
+        case QUEEN:  promoChar = 'q'; break;
+        default:     promoChar = 'q'; break;
+        }
+        s.push_back(promoChar);
+    }
+    return s;
+}
+
+// Generate all legal moves under your forced-capture rule
+static void generate_variant_moves(Board &b, MoveList &out) {
+    out.clear();
+    // validMoveGeneration already:
+    //  - generates pseudolegal moves
+    //  - filters illegal ones with make_move/unmake_move + isInCheck
+    //  - applies the forced-capture rule
+    validMoveGeneration(b, static_cast<Side>(b.side), out);
+}
+
+bool parse_uci_move(Board &b,
+                    const std::string &text,
+                    Move &out_move)
+{
+    MoveList moves;
+    generate_variant_moves(b, moves);
+
+    for (int i = 0; i < moves.count; ++i) {
+        const Move &m = moves.moves[i];
+        if (move_to_uci(m) == text) {
+            out_move = m;
+            return true;
+        }
+    }
+    return false; // illegal or unknown
+}
+
+// For now, choose a move randomly among legal moves.
+// Later, replace this with your real search.
+static Move search_best_move(EngineSession &sess) {
+    MoveList moves;
+    generate_variant_moves(sess.board, moves);
+    if (moves.count == 0) return Move(); // null
+
+    int idx = std::rand() % moves.count;
+    return moves.moves[idx];
+
+    // Example for later:
+    // SearchConfig cfg;
+    // Move best = search_next_move(sess.board, cfg);
+    // return best;
+}
+
+// ---------------------------
+// Session init
+// ---------------------------
+
+void init_engine_session(EngineSession &sess) {
+    clear_board(sess.board);
+    setup_startpos(sess.board);
+    rebuild_bitboards(sess.board);
+
+    sess.side_to_move = WHITE;
+    sess.board.side   = WHITE;
+
+    sess.mode           = EngineMode::FORCE;
+    sess.quit_requested = false;
+    sess.my_time_cs     = 0;
+    sess.opp_time_cs    = 0;
+    sess.last_ping_id   = 0;
+}
+
+// ---------------------------
+// Command handlers
+// ---------------------------
+
+static void handle_xboard(EngineSession&) {
+    // nothing special needed
+}
+
+static void handle_protover(EngineSession&, int version) {
+    (void)version;
+
+    // Minimal feature set to keep XBoard / cutechess happy.
+    std::cout
+        << "feature ping=1 time=1 usermove=1 setboard=1 "
+        << "variants=\"normal\" sigint=0 sigterm=0 myname=\"Team_David_Jao\" "
+        << "done=1\n";
+}
+
+static void handle_new(EngineSession &sess) {
+    clear_board(sess.board);
+    setup_startpos(sess.board);
+    rebuild_bitboards(sess.board);
+
+    sess.side_to_move = WHITE;
+    sess.board.side   = WHITE;
+
+    sess.mode        = EngineMode::FORCE;  // engine plays black by default
+    sess.my_time_cs  = 0;
+    sess.opp_time_cs = 0;
+}
+
+static void handle_force(EngineSession &sess) {
+    sess.mode = EngineMode::FORCE;
+}
+
+static void do_engine_move(EngineSession &sess) {
+    Move best = search_best_move(sess);
+
+    if (best.isNull()) {
+        // No legal moves: mate or stalemate; GUI will send 'result'.
+        return;
+    }
+
+    // Your make_move from MoveApply.h updates:
+    // - squares
+    // - side to move
+    // - castling, ep, clocks
+    // - zobrist
+    bool ok = make_move(sess.board, best);
+    if (!ok) {
+        // This should never happen if moves came from validMoveGeneration.
+        return;
+    }
+
+    sess.side_to_move = sess.board.side;
+
+    std::string s = move_to_uci(best);
+    std::cout << "move " << s << "\n";
+}
+
+static void handle_go(EngineSession &sess) {
+    sess.mode = EngineMode::PLAYING;
+    do_engine_move(sess);
+}
+
+static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
+    Move m;
+    if (!parse_uci_move(sess.board, mvStr, m)) {
+        std::cout << "Illegal move: " << mvStr << "\n";
+        return;
+    }
+
+    bool ok = make_move(sess.board, m);
+    if (!ok) {
+        std::cout << "Illegal move: " << mvStr << "\n";
+        return;
+    }
+
+    sess.side_to_move = sess.board.side;
+
+    if (sess.mode == EngineMode::PLAYING) {
+        do_engine_move(sess);
+    }
+}
+
+static void handle_time(EngineSession &sess, int cs) {
+    sess.my_time_cs = cs;
+}
+
+static void handle_otim(EngineSession &sess, int cs) {
+    sess.opp_time_cs = cs;
+}
+
+static void handle_ping(EngineSession &sess, int id) {
+    sess.last_ping_id = id;
+    std::cout << "pong " << id << "\n";
+}
+
+static void handle_result(EngineSession &sess, const std::string&) {
+    // Game ended; engine goes back to force mode.
+    sess.mode = EngineMode::FORCE;
+}
+
+static void handle_quit(EngineSession &sess) {
+    sess.quit_requested = true;
+}
+
+// ---------------------------
+// Main CECP loop
+// ---------------------------
+
+void cecp_main_loop(EngineSession &sess) {
+    std::string line;
+
+    while (!sess.quit_requested && std::getline(std::cin, line)) {
+        // Strip possible \r from Windows line endings
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (line.empty()) continue;
+
+        std::istringstream iss(line);
+        std::string cmd;
+        iss >> cmd;
+
+        if (cmd == "xboard") {
+            handle_xboard(sess);
+        }
+        else if (cmd == "protover") {
+            int v = 1; iss >> v;
+            handle_protover(sess, v);
+        }
+        else if (cmd == "new") {
+            handle_new(sess);
+        }
+        else if (cmd == "force") {
+            handle_force(sess);
+        }
+        else if (cmd == "go") {
+            handle_go(sess);
+        }
+        else if (cmd == "usermove") {
+            std::string mvStr; iss >> mvStr;
+            handle_usermove(sess, mvStr);
+        }
+        else if (cmd == "time") {
+            int t; iss >> t;
+            handle_time(sess, t);
+        }
+        else if (cmd == "otim") {
+            int t; iss >> t;
+            handle_otim(sess, t);
+        }
+        else if (cmd == "ping") {
+            int id; iss >> id;
+            handle_ping(sess, id);
+        }
+        else if (cmd == "result") {
+            handle_result(sess, line);
+        }
+        else if (cmd == "quit") {
+            handle_quit(sess);
+        }
+        else {
+            // Unknown or unsupported command: safe to ignore.
+        }
+
+        std::fflush(stdout);
+    }
+}
