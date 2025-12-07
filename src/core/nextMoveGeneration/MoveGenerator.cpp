@@ -653,8 +653,6 @@ static void validMoveGeneration_ApproachA(Board &board,
 {
   outMoves.clear();
 
-  bool inCheck = isInCheck(board, side);
-
   // 1) Generate all pseudolegal moves (captures + quiets)
   generatePseudoLegalMoves(board, side, outMoves);
 
@@ -694,4 +692,15 @@ void validMoveGeneration(Board &board,
                          bool captureOnly)
 {
   validMoveGeneration_ApproachA(board, side, outMoves, captureOnly);
+}
+
+// Public convenience wrappers
+void generate_legal_moves(Board &board, Side side, MoveList &outMoves)
+{
+  validMoveGeneration(board, side, outMoves, /*captureOnly=*/false);
+}
+
+void get_variant_moves(Board &board, Side side, MoveList &outMoves)
+{
+  validMoveGeneration(board, side, outMoves, /*captureOnly=*/true);
 }

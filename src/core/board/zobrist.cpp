@@ -135,17 +135,31 @@ uint64_t compute_zobrist(const Board &b) {
 
     if (b.ep_square != NO_SQUARE) {
         int ep_rank = RANK_OF(b.ep_square);
+        int ep_file = FILE_OF(b.ep_square);
         bool ep_capturable = false;
-        if (b.side == WHITE) {
-            // White to move can capture EP only if EP square is on rank 5
-            ep_capturable = (ep_rank == 5);
-        } else {
-            // Black to move can capture EP only if EP square is on rank 2
-            ep_capturable = (ep_rank == 2);
+        if (b.side == WHITE && ep_rank == 5) {
+            // White to move: need a white pawn on rank 5 adjacent files.
+            if (ep_file > 0) {
+                int sqL = MAKE_SQUARE(ep_file - 1, 5);
+                ep_capturable |= (b.squares[sqL] == WPAWN);
+            }
+            if (ep_file < 7) {
+                int sqR = MAKE_SQUARE(ep_file + 1, 5);
+                ep_capturable |= (b.squares[sqR] == WPAWN);
+            }
+        } else if (b.side == BLACK && ep_rank == 2) {
+            // Black to move: need a black pawn on rank 4 (index 3) adjacent files.
+            if (ep_file > 0) {
+                int sqL = MAKE_SQUARE(ep_file - 1, 3);
+                ep_capturable |= (b.squares[sqL] == BPAWN);
+            }
+            if (ep_file < 7) {
+                int sqR = MAKE_SQUARE(ep_file + 1, 3);
+                ep_capturable |= (b.squares[sqR] == BPAWN);
+            }
         }
         if (ep_capturable) {
-            int f = FILE_OF(b.ep_square);
-            key ^= Z_EP_FILE[f];
+            key ^= Z_EP_FILE[ep_file];
         }
     }
 
