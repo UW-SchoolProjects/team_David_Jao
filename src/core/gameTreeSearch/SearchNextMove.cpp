@@ -85,6 +85,7 @@ See LICENSE file for details.
 */
 
 #include "SearchNextMove.h"
+#include "../nextMoveGeneration/MoveApply.h"
 
 // PV table: pvTable[ply][i] is the i-th move in the PV at search ply `ply`.
 static Move pvTable[MAX_PLY][MAX_PLY];
@@ -143,13 +144,13 @@ int search(Board &board,
   {
     Move m = moves.moves[i];
 
-    if (!makeMove(board, m))
+    if (!make_move(board, m))
       continue; // illegal move; skip
 
     // Negamax: flip perspective and bounds
     int score = -search(board, depth - 1, -beta, -alpha, ply + 1, evalFn);
 
-    unmakeMove(board, m);
+    unmake_move(board);
 
     if (score > bestScore)
     {

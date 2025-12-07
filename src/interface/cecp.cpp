@@ -4,9 +4,11 @@
 #include <sstream>
 #include <cstdlib>
 #include <cstdio>
+#include <cctype>
 
 #include "../core/nextMoveGeneration/MoveGenerator.h"   // MoveList, validMoveGeneration
 #include "../core/nextMoveGeneration/MoveApply.h"       // make_move, unmake_move
+#include "../core/board/zobrist.h"
 
 // If you later want to hook in your real search, include those:
 // #include "../core/gameTreeSearch/SearchNextMove.h"
@@ -17,6 +19,8 @@
 // Small helpers
 // ---------------------------
 
+static constexpr const char kEngineName[] = "Team_David_Jao";
+
 static inline int opposite_side(int s) {
     return s == WHITE ? BLACK : WHITE;
 }
@@ -26,6 +30,98 @@ static inline void sq64_to_file_rank(int sq64, char &fileChar, char &rankChar) {
     int rank = sq64 / 8;
     fileChar = char('a' + file);
     rankChar = char('1' + rank);
+}
+
+static int piece_from_fen_char(char c) {
+    switch (c) {
+    case 'P': return WPAWN;
+    case 'N': return WKNIGHT;
+    case 'B': return WBISHOP;
+    case 'R': return WROOK;
+    case 'Q': return WQUEEN;
+    case 'K': return WKING;
+    case 'p': return BPAWN;
+    case 'n': return BKNIGHT;
+    case 'b': return BBISHOP;
+    case 'r': return BROOK;
+    case 'q': return BQUEEN;
+    case 'k': return BKING;
+    default:  return -1;
+    }
+}
+
+static bool load_fen(Board &b, const std::string &fen) {
+    std::istringstream iss(fen);
+    std::string placement, stm, castling, ep;
+    int halfmove = 0;
+    int fullmove = 1;
+
+    if (!(iss >> placement >> stm >> castling >> ep >> halfmove >> fullmove)) {
+        return false;
+    }
+
+    clear_board(b);
+
+    int rank = 7;
+    int file = 0;
+    for (char c : placement) {
+        if (c == '/') {
+            if (file != 8 || rank == 0) return false;
+            --rank;
+            file = 0;
+            continue;
+        }
+        if (std::isdigit(static_cast<unsigned char>(c))) {
+            file += c - '0';
+            if (file > 8) return false;
+            continue;
+        }
+
+        int piece = piece_from_fen_char(c);
+        if (piece == -1 || file >= 8 || rank < 0) return false;
+
+        int sq = MAKE_SQUARE(file, rank);
+        b.squares[sq] = piece;
+        ++file;
+    }
+    if (rank != 0 || file != 8) return false;
+
+    if (stm == "w")      b.side = WHITE;
+    else if (stm == "b") b.side = BLACK;
+    else return false;
+
+    b.castling = 0;
+    if (castling != "-") {
+        for (char c : castling) {
+            switch (c) {
+            case 'K': b.castling |= WKCA; break;
+            case 'Q': b.castling |= WQCA; break;
+            case 'k': b.castling |= BKCA; break;
+            case 'q': b.castling |= BQCA; break;
+            default: return false;
+            }
+        }
+    }
+
+    b.ep_square = NO_SQUARE;
+    if (ep != "-") {
+        if (ep.size() != 2) return false;
+        char fileChar = ep[0];
+        char rankChar = ep[1];
+        if (fileChar < 'a' || fileChar > 'h' || rankChar < '1' || rankChar > '8') return false;
+        int f = fileChar - 'a';
+        int r = rankChar - '1';
+        b.ep_square = MAKE_SQUARE(f, r);
+    }
+
+    if (halfmove < 0) halfmove = 0;
+    if (fullmove < 1) fullmove = 1;
+    b.halfmove_clock = halfmove;
+    b.fullmove_number = fullmove;
+
+    rebuild_bitboards(b);
+    b.zobrist_key = compute_zobrist(b);
+    return true;
 }
 
 // ---------------------------
@@ -70,7 +166,7 @@ static void generate_variant_moves(Board &b, MoveList &out) {
     //  - generates pseudolegal moves
     //  - filters illegal ones with make_move/unmake_move + isInCheck
     //  - applies the forced-capture rule
-    validMoveGeneration(b, static_cast<Side>(b.side), out);
+    validMoveGeneration(b, static_cast<Side>(b.side), out, /*captureOnly=*/true);
 }
 
 bool parse_uci_move(Board &b,
@@ -138,22 +234,12 @@ static void handle_protover(EngineSession&, int version) {
 
     // Minimal feature set to keep XBoard / cutechess happy.
     std::cout
-        << "feature ping=1 time=1 usermove=1 setboard=1 "
-        << "variants=\"normal\" sigint=0 sigterm=0 myname=\"Team_David_Jao\" "
-        << "done=1\n";
+        << "feature myname=\"" << kEngineName << "\" variants=\"normal\" "
+        << "setboard=1 usermove=1 ping=1 done=1\n";
 }
 
 static void handle_new(EngineSession &sess) {
-    clear_board(sess.board);
-    setup_startpos(sess.board);
-    rebuild_bitboards(sess.board);
-
-    sess.side_to_move = WHITE;
-    sess.board.side   = WHITE;
-
-    sess.mode        = EngineMode::FORCE;  // engine plays black by default
-    sess.my_time_cs  = 0;
-    sess.opp_time_cs = 0;
+    init_engine_session(sess);
 }
 
 static void handle_force(EngineSession &sess) {
@@ -232,6 +318,16 @@ static void handle_quit(EngineSession &sess) {
     sess.quit_requested = true;
 }
 
+static void handle_setboard(EngineSession &sess, const std::string &fen) {
+    if (!load_fen(sess.board, fen)) {
+        std::cout << "Illegal position: " << fen << "\n";
+        return;
+    }
+
+    sess.side_to_move = sess.board.side;
+    sess.mode = EngineMode::FORCE;
+}
+
 // ---------------------------
 // Main CECP loop
 // ---------------------------
@@ -284,6 +380,14 @@ void cecp_main_loop(EngineSession &sess) {
         }
         else if (cmd == "result") {
             handle_result(sess, line);
+        }
+        else if (cmd == "setboard") {
+            std::string fenRest;
+            std::getline(iss, fenRest);
+            if (!fenRest.empty() && fenRest.front() == ' ') {
+                fenRest.erase(0, fenRest.find_first_not_of(' '));
+            }
+            handle_setboard(sess, fenRest);
         }
         else if (cmd == "quit") {
             handle_quit(sess);

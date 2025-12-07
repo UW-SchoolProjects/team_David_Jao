@@ -149,11 +149,19 @@ void setup_startpos(Board &b) {
 }
 
 void rebuild_bitboards(Board& b) {
-    for (int i = 7; i >= 0; i--) {
-        for (int j = 0; j < 8; j++) {
-            auto piece = b.squares[MAKE_SQUARE(j, i)];
-            if (piece == EMPTY) {
-                bb_set_piece(b, BB_INDEX(j, i), piece);
+    // Reset all bitboards
+    for (int i = 0; i < 16; ++i) b.bb_piece[i] = 0ULL;
+    b.bb_side[0] = b.bb_side[1] = 0ULL;
+    b.bb_occ = 0ULL;
+
+    // Add every non-empty piece
+    for (int rank = 0; rank < 8; ++rank) {
+        for (int file = 0; file < 8; ++file) {
+            int sq0x88 = MAKE_SQUARE(file, rank);
+            int piece = b.squares[sq0x88];
+            if (piece != EMPTY) {
+                int sq64 = BB_INDEX(file, rank);
+                bb_set_piece(b, sq64, piece);
             }
         }
     }

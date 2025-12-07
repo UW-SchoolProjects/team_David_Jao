@@ -403,21 +403,13 @@ namespace
 uint64_t bishopAttacks(int sq, uint64_t occ)
 {
   assert(sq >= 0 && sq < 64);
-  ensureMagicInitialized();
-
-  U64 blockers = occ & bishopMask[sq];
-  int relBits = bishopRelevantBits[sq];
-  U64 key = (blockers * bishopMagic[sq]) >> (64 - relBits);
-  return bishopAttackTable[sq][key];
+  // Fallback to on-the-fly ray tracing until magic numbers are provided.
+  return bishopAttacksOnTheFly(sq, occ);
 }
 
 uint64_t rookAttacks(int sq, uint64_t occ)
 {
   assert(sq >= 0 && sq < 64);
-  ensureMagicInitialized();
-
-  U64 blockers = occ & rookMask[sq];
-  int relBits = rookRelevantBits[sq];
-  U64 key = (blockers * rookMagic[sq]) >> (64 - relBits);
-  return rookAttackTable[sq][key];
+  // Fallback to on-the-fly ray tracing until magic numbers are provided.
+  return rookAttacksOnTheFly(sq, occ);
 }

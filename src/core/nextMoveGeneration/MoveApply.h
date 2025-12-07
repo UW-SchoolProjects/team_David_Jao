@@ -88,10 +88,8 @@ See LICENSE file for details.
 #define MOVE_APPLY_H
 
 #include "../board/board.h"
+#include "../common/constants.h"
 #include "move.h"
-
-// Max search depth / history size
-constexpr int MAX_PLY = 256;
 
 // One entry of the undo / history stack
 struct UndoState {
