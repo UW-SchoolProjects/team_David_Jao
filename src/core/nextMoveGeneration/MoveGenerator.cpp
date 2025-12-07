@@ -88,7 +88,6 @@ See LICENSE file for details.
 */
 
 #include "MoveGenerator.h"
-#include "move.h"
 #include <cassert>
 #include "MoveApply.h"
 

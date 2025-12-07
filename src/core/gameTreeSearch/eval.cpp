@@ -84,170 +84,335 @@ Use of this code is permitted for educational and academic purposes only.
 See LICENSE file for details.
 */
 
-#include "SearchNextMove.h"
+#include "eval.h"
+#include <algorithm> // for std::min
 
-// PV table: pvTable[ply][i] is the i-th move in the PV at search ply `ply`.
-static Move pvTable[MAX_PLY][MAX_PLY];
+// -----------------------------------------------------------------------------
+// Eval configuration / tuning knobs (easy to tweak later)
+// -----------------------------------------------------------------------------
 
-// PV length per ply
-static int pvLength[MAX_PLY];
+// Piece values indexed by PieceType (0..6)
+static constexpr int MG_PIECE_VALUE[7] = {
+    0,   // EMPTY
+    100, // PAWN
+    320, // KNIGHT
+    330, // BISHOP
+    500, // ROOK
+    900, // QUEEN
+    0    // KING (material value usually not used directly)
+};
 
-int search(Board &board,
-           int depth,
-           int alpha,
-           int beta,
-           int ply,
-           EvalFn evalFn)
+static constexpr int EG_PIECE_VALUE[7] = {
+    0,   // EMPTY
+    100, // PAWN
+    320, // KNIGHT
+    330, // BISHOP
+    500, // ROOK
+    900, // QUEEN
+    0    // KING
+};
+
+// Bishop pair bonus (applied once per side)
+static constexpr int BISHOP_PAIR_BONUS = 30;
+
+// Tempo bonus (side to move)
+static constexpr int TEMPO_BONUS = 10;
+
+// Phase weights: how much each piece contributes to "middlegame-ness".
+// We exclude pawns and kings (standard approach).
+// The total at start position should be 24.
+static constexpr int PHASE_PAWN = 0;
+static constexpr int PHASE_KNIGHT = 1;
+static constexpr int PHASE_BISHOP = 1;
+static constexpr int PHASE_ROOK = 2;
+static constexpr int PHASE_QUEEN = 4;
+static constexpr int PHASE_KING = 0;
+
+static constexpr int PHASE_TOTAL = 24; // clamp target 0..24
+
+// Map PieceType -> phase weight
+static constexpr int PHASE_WEIGHT[7] = {
+    0,            // EMPTY
+    PHASE_PAWN,   // PAWN
+    PHASE_KNIGHT, // KNIGHT
+    PHASE_BISHOP, // BISHOP
+    PHASE_ROOK,   // ROOK
+    PHASE_QUEEN,  // QUEEN
+    PHASE_KING    // KING
+};
+
+// -----------------------------------------------------------------------------
+// Piece-Square Tables (PST) framework
+//
+// We define white-oriented MG/EG PSTs for each PieceType.
+// Black uses the same tables, but indexed on mirror-square (vertical flip).
+//
+// Tables here are intentionally simple / low-magnitude so you can hand-tune
+// and/or auto-tune them later without fighting giant numbers.
+// -----------------------------------------------------------------------------
+
+// Helper to mirror a 0..63 square vertically (for black PST lookup)
+static inline int mirrorSquare64(int sq64)
 {
-  // TODO (Task 3.2): Transposition table probe (TT lookup) can go here.
-
-  // Initialize PV length for this ply (no moves yet)
-  pvLength[ply] = 0;
-
-  // --- Depth / leaf handling ---
-  if (depth <= 0)
-  {
-    // TODO (Task 3.3): Replace plain eval with quiescence:
-    // return qsearch(board, alpha, beta, ply, evalFn);
-    return evalFn(board);
-  }
-
-  // --- Generate all legal moves for the side to move ---
-  MoveList moves;
-  validMoveGeneration(board, static_cast<Side>(board.side), moves);
-
-  if (moves.empty())
-  {
-    Side sideToMove = static_cast<Side>(board.side);
-
-    if (isInCheck(board, sideToMove))
-    {
-      // Checkmate: side to move has no moves and is in check.
-      // Encode mate as a large negative score, slightly adjusted by ply
-      // so closer mates are better (for the winning side).
-      return -SCORE_MATE + ply;
-    }
-    else
-    {
-      // Stalemate: draw
-      return 0;
-    }
-  }
-
-  int bestScore = -SCORE_INF;
-  Move bestMove; // for PV / TT (not used directly by caller)
-
-  // TODO (Task 3.2.2): Hash move ordering can go here.
-
-  for (int i = 0; i < moves.count; ++i)
-  {
-    Move m = moves.moves[i];
-
-    if (!makeMove(board, m))
-      continue; // illegal move; skip
-
-    // Negamax: flip perspective and bounds
-    int score = -search(board, depth - 1, -beta, -alpha, ply + 1, evalFn);
-
-    unmakeMove(board, m);
-
-    if (score > bestScore)
-    {
-      bestScore = score;
-      bestMove = m;
-
-      // --- PV update: this move becomes first move of new PV at this ply ---
-      pvTable[ply][0] = m;
-      pvLength[ply] = pvLength[ply + 1] + 1;
-
-      for (int j = 0; j < pvLength[ply + 1]; ++j)
-      {
-        pvTable[ply][j + 1] = pvTable[ply + 1][j];
-      }
-    }
-
-    if (bestScore > alpha)
-    {
-      alpha = bestScore;
-      // TODO (PV-node info for TT, if desired)
-    }
-
-    // Alpha-beta cutoff
-    if (alpha >= beta)
-    {
-      // TODO (Task 3.2): Store as BETA node in TT.
-      break;
-    }
-  }
-
-  // TODO (Task 3.2): Store result in TT with appropriate flag (EXACT / ALPHA / BETA).
-
-  return bestScore;
+  int file = sq64 & 7;  // 0..7
+  int rank = sq64 >> 3; // 0..7
+  int mirroredRank = 7 - rank;
+  return (mirroredRank << 3) | file;
 }
 
-Move getBestMove(Board &board, int maxDepth, EvalFn evalFn)
+// For clarity, we index PSTs as [PieceType][square64], ignoring index 0 (EMPTY).
+// All tables are "from White's point of view" on a1=0..h8=63 board.
+
+// Middlegame PSTs (basic centralization patterns, very conservative to start).
+// You can replace these with better-tuned values later.
+static const int MG_PST[7][64] = {
+    // [0] EMPTY - unused
+    {0},
+
+    // [1] PAWN
+    {
+        // a1..h1
+        0, 0, 0, 0, 0, 0, 0, 0,
+        // a2..h2
+        5, 5, 5, 5, 5, 5, 5, 5,
+        // a3..h3
+        1, 1, 2, 3, 3, 2, 1, 1,
+        // a4..h4
+        0, 0, 1, 3, 3, 1, 0, 0,
+        // a5..h5
+        -1, -1, 0, 2, 2, 0, -1, -1,
+        // a6..h6
+        -2, -2, -1, 0, 0, -1, -2, -2,
+        // a7..h7
+        -3, -3, -2, -2, -2, -2, -3, -3,
+        // a8..h8
+        0, 0, 0, 0, 0, 0, 0, 0},
+
+    // [2] KNIGHT
+    {
+        -5, -3, -2, -2, -2, -2, -3, -5,
+        -3, 0, 1, 1, 1, 1, 0, -3,
+        -2, 1, 2, 3, 3, 2, 1, -2,
+        -2, 1, 3, 4, 4, 3, 1, -2,
+        -2, 1, 3, 4, 4, 3, 1, -2,
+        -2, 1, 2, 3, 3, 2, 1, -2,
+        -3, 0, 1, 1, 1, 1, 0, -3,
+        -5, -3, -2, -2, -2, -2, -3, -5},
+
+    // [3] BISHOP
+    {
+        -3, -2, -2, -1, -1, -2, -2, -3,
+        -2, 0, 0, 1, 1, 0, 0, -2,
+        -2, 1, 1, 2, 2, 1, 1, -2,
+        -1, 1, 2, 2, 2, 2, 1, -1,
+        -1, 1, 2, 2, 2, 2, 1, -1,
+        -2, 1, 1, 2, 2, 1, 1, -2,
+        -2, 0, 0, 1, 1, 0, 0, -2,
+        -3, -2, -2, -1, -1, -2, -2, -3},
+
+    // [4] ROOK
+    {
+        0, 0, 0, 1, 1, 0, 0, 0,
+        -1, 0, 0, 2, 2, 0, 0, -1,
+        -1, 0, 0, 2, 2, 0, 0, -1,
+        -1, 0, 0, 2, 2, 0, 0, -1,
+        -1, 0, 0, 2, 2, 0, 0, -1,
+        -1, 0, 0, 2, 2, 0, 0, -1,
+        1, 1, 1, 3, 3, 1, 1, 1,
+        1, 1, 1, 3, 3, 1, 1, 1},
+
+    // [5] QUEEN
+    {
+        -2, -1, -1, 0, 0, -1, -1, -2,
+        -1, 0, 1, 1, 1, 1, 0, -1,
+        -1, 1, 1, 2, 2, 1, 1, -1,
+        0, 1, 2, 2, 2, 2, 1, 0,
+        0, 1, 2, 2, 2, 2, 1, 0,
+        -1, 1, 1, 2, 2, 1, 1, -1,
+        -1, 0, 1, 1, 1, 1, 0, -1,
+        -2, -1, -1, 0, 0, -1, -1, -2},
+
+    // [6] KING (middlegame: prefer castled-ish, away from center)
+    {
+        2, 3, 1, 0, 0, 1, 3, 2,
+        1, 2, 0, -1, -1, 0, 2, 1,
+        -1, -2, -3, -3, -3, -3, -2, -1,
+        -2, -3, -4, -4, -4, -4, -3, -2,
+        -2, -3, -4, -4, -4, -4, -3, -2,
+        -1, -2, -3, -3, -3, -3, -2, -1,
+        1, 1, -1, -2, -2, -1, 1, 1,
+        2, 3, 1, 0, 0, 1, 3, 2}};
+
+// Endgame PSTs (king centralization, pawns advancing, etc. simplified).
+static const int EG_PST[7][64] = {
+    // [0] EMPTY - unused
+    {0},
+
+    // [1] PAWN
+    {
+        0, 0, 0, 0, 0, 0, 0, 0,
+        0, 1, 1, 2, 2, 1, 1, 0,
+        0, 2, 2, 3, 3, 2, 2, 0,
+        0, 3, 3, 4, 4, 3, 3, 0,
+        1, 4, 4, 5, 5, 4, 4, 1,
+        2, 5, 5, 6, 6, 5, 5, 2,
+        3, 6, 6, 7, 7, 6, 6, 3,
+        0, 0, 0, 0, 0, 0, 0, 0},
+
+    // [2] KNIGHT (still likes center but slightly less sharp)
+    {
+        -3, -2, -1, -1, -1, -1, -2, -3,
+        -2, 0, 0, 1, 1, 0, 0, -2,
+        -1, 0, 1, 2, 2, 1, 0, -1,
+        -1, 1, 2, 3, 3, 2, 1, -1,
+        -1, 1, 2, 3, 3, 2, 1, -1,
+        -1, 0, 1, 2, 2, 1, 0, -1,
+        -2, 0, 0, 1, 1, 0, 0, -2,
+        -3, -2, -1, -1, -1, -1, -2, -3},
+
+    // [3] BISHOP
+    {
+        -2, -1, -1, 0, 0, -1, -1, -2,
+        -1, 0, 1, 1, 1, 1, 0, -1,
+        -1, 1, 1, 2, 2, 1, 1, -1,
+        0, 1, 2, 2, 2, 2, 1, 0,
+        0, 1, 2, 2, 2, 2, 1, 0,
+        -1, 1, 1, 2, 2, 1, 1, -1,
+        -1, 0, 1, 1, 1, 1, 0, -1,
+        -2, -1, -1, 0, 0, -1, -1, -2},
+
+    // [4] ROOK (open files more valuable)
+    {
+        0, 0, 1, 2, 2, 1, 0, 0,
+        0, 0, 1, 2, 2, 1, 0, 0,
+        0, 0, 1, 2, 2, 1, 0, 0,
+        0, 0, 1, 2, 2, 1, 0, 0,
+        0, 0, 1, 2, 2, 1, 0, 0,
+        0, 0, 1, 2, 2, 1, 0, 0,
+        1, 1, 2, 3, 3, 2, 1, 1,
+        1, 1, 2, 3, 3, 2, 1, 1},
+
+    // [5] QUEEN
+    {
+        -2, -1, -1, 0, 0, -1, -1, -2,
+        -1, 0, 1, 1, 1, 1, 0, -1,
+        -1, 1, 2, 2, 2, 2, 1, -1,
+        0, 1, 2, 3, 3, 2, 1, 0,
+        0, 1, 2, 3, 3, 2, 1, 0,
+        -1, 1, 2, 2, 2, 2, 1, -1,
+        -1, 0, 1, 1, 1, 1, 0, -1,
+        -2, -1, -1, 0, 0, -1, -1, -2},
+
+    // [6] KING (endgame: encourage centralization)
+    {
+        -1, 0, 0, 1, 1, 0, 0, -1,
+        0, 1, 1, 2, 2, 1, 1, 0,
+        0, 1, 2, 3, 3, 2, 1, 0,
+        1, 2, 3, 4, 4, 3, 2, 1,
+        1, 2, 3, 4, 4, 3, 2, 1,
+        0, 1, 2, 3, 3, 2, 1, 0,
+        0, 1, 1, 2, 2, 1, 1, 0,
+        -1, 0, 0, 1, 1, 0, 0, -1}};
+
+// -----------------------------------------------------------------------------
+// Core evaluation
+// - Returns score from side-to-move perspective.
+// - Positive = good for side to move.
+// -----------------------------------------------------------------------------
+
+int basicEvaluate(const Board &board)
 {
-  Move bestMove;     // move to return
-  int bestScore = 0; // last stable root score
-  bool havePV = false;
+  int mgScore = 0; // Middlegame score (White POV)
+  int egScore = 0; // Endgame score   (White POV)
 
-  // Iterative deepening loop: depths 1..maxDepth
-  for (int depth = 1; depth <= maxDepth; ++depth)
+  int whiteBishops = 0;
+  int blackBishops = 0;
+
+  int phase = 0; // 0..PHASE_TOTAL
+
+  // --- Scan all 0x88 squares ---
+  for (int sq = 0; sq < BOARD_SIZE; ++sq)
   {
-    int alpha, beta;
-    int score;
+    if (!IS_ONBOARD(sq))
+      continue;
 
-    if (depth == 1)
+    int piece = board.squares[sq];
+    if (piece == EMPTY)
+      continue;
+
+    int pt = type_of(piece);    // PieceType 1..6
+    int side = color_of(piece); // WHITE or BLACK
+
+    // Skip EMPTY or unexpected values defensively
+    if (pt < PAWN || pt > KING)
+      continue;
+
+    // Map 0x88 square to 0..63 index
+    int sq64 = BB_INDEX_FROM_0x88(sq);
+
+    // Use white-oriented PSTs and mirror for black
+    int idx = (side == WHITE) ? sq64 : mirrorSquare64(sq64);
+
+    int mgVal = MG_PIECE_VALUE[pt] + MG_PST[pt][idx];
+    int egVal = EG_PIECE_VALUE[pt] + EG_PST[pt][idx];
+
+    // Phase contribution (based on piece type only)
+    phase += PHASE_WEIGHT[pt];
+
+    if (side == WHITE)
     {
-      // First iteration: full-window search.
-      alpha = -SCORE_INF;
-      beta = SCORE_INF;
-      score = search(board, depth, alpha, beta, /*ply=*/0, evalFn);
+      mgScore += mgVal;
+      egScore += egVal;
+      if (pt == BISHOP)
+        ++whiteBishops;
     }
     else
     {
-      alpha = bestScore - ASP_WINDOW;
-      beta = bestScore + ASP_WINDOW;
-
-      // First try with the narrow window
-      score = search(board, depth, alpha, beta, /*ply=*/0, evalFn);
-
-      // If we fail low or high, re-search with full window
-      if (score <= alpha || score >= beta)
-      {
-        alpha = -SCORE_INF;
-        beta = SCORE_INF;
-        score = search(board, depth, alpha, beta, /*ply=*/0, evalFn);
-      }
-    }
-
-    // After search, PV for this depth is in pvTable[0]
-    if (pvLength[0] > 0)
-    {
-      bestMove = pvTable[0][0];
-      bestScore = score;
-      havePV = true;
-
-      // (Optional) You can print or log the PV line here for debugging:
-      // std::cout << "info depth " << depth << " score cp " << bestScore << " pv ";
-      // for (int i = 0; i < pvLength[0]; ++i) {
-      //   std::cout << pvTable[0][i].toString() << ' ';
-      // }
-      // std::cout << std::endl;
-    }
-    else
-    {
-      // No PV at this depth: no legal moves (mate/stalemate).
-      // We can break early, as deeper searches won't change that.
-      break;
+      mgScore -= mgVal;
+      egScore -= egVal;
+      if (pt == BISHOP)
+        ++blackBishops;
     }
   }
 
-  if (!havePV)
+  // Clamp phase to [0, PHASE_TOTAL]
+  phase = std::min(phase, PHASE_TOTAL);
+  // phase = PHASE_TOTAL → "pure" middlegame
+  // phase = 0           → "pure" endgame
+
+  // --- Bishop pair bonus (applied equally to MG and EG) ---
+  if (whiteBishops >= 2)
   {
-    // No legal moves from the start position.
-    return Move(); // null move; caller can interpret as game over.
+    mgScore += BISHOP_PAIR_BONUS;
+    egScore += BISHOP_PAIR_BONUS;
+  }
+  if (blackBishops >= 2)
+  {
+    mgScore -= BISHOP_PAIR_BONUS;
+    egScore -= BISHOP_PAIR_BONUS;
   }
 
-  return bestMove;
+  // --- Phase tapered blend ---
+  //
+  // scoreWhite = (mgScore * phase + egScore * (PHASE_TOTAL - phase)) / PHASE_TOTAL
+  //
+  // When phase ≈ 24: mostly middlegame
+  // When phase ≈  0: mostly endgame
+
+  int scoreWhite =
+      (mgScore * phase + egScore * (PHASE_TOTAL - phase)) / std::max(1, PHASE_TOTAL);
+
+  // --- Tempo bonus ---
+  // Add tempo from White POV
+  if (board.side == WHITE)
+    scoreWhite += TEMPO_BONUS;
+  else
+    scoreWhite -= TEMPO_BONUS;
+
+  // Convert from White POV to side-to-move POV:
+  // Positive = good for side to move.
+  if (board.side == WHITE)
+    return scoreWhite;
+  else
+    return -scoreWhite;
 }
