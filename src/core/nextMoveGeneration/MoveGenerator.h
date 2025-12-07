@@ -88,7 +88,7 @@ See LICENSE file for details.
 #define MOVE_GENERATION_H
 
 #include <cstdint>
-#include "../../main/board.h"
+#include "../board/board.h"
 #include "move.h"
 
 // Maximum number of moves possible from a single position.
@@ -122,7 +122,7 @@ struct MoveList
  * Task 2.1.1 — Check detection.
  * Returns true if `side`'s king is currently in check.
  */
-bool isInCheck(const Board &board, Side side);
+bool isInCheck(Board &board, Side side);
 
 /**
  * Generate all *legal* moves for the given side on the given board.
@@ -133,9 +133,6 @@ bool isInCheck(const Board &board, Side side);
  *
  * This is the main entry point that the game tree/search code should call.
  */
-void validMoveGeneration(const Board &board,
-                         Side side,
-                         MoveList &outMoves,
-                         bool captureOnly = false);
+void validMoveGeneration(Board &board, Side side, MoveList &outMoves, bool captureOnly = false);
 
 #endif // MOVE_GENERATION_H
