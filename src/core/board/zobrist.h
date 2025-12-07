@@ -135,7 +135,7 @@ void zobrist_update_move(Board &b, int from, int to, int moved, int captured);
 void zobrist_update_promotion(Board &b, int to, int moved, int promo_piece);
 
 // Updates the Zobrist key after en passant
-void zobrist_update_en_passant(Board &b, int from, int to, int moved);
+void zobrist_update_en_passant(Board &b, int to, int moved);
 
 // Updates the Zobrist key after a castling
 void zobrist_update_castling_move(Board &b, CastlingType type);

@@ -1,17 +1,10 @@
-#include "../core/board/board.h"
-#include <iostream>
 
-using namespace std;
+#include <iostream>
+#include "../interface/cecp.h"
 
 int main() {
-    Board b = {};
-    setup_startpos(b);
-    print_board(b);
-
-    if (!assert_bb_consistency(b)) {
-        cout << "bit board error!" << endl;
-        return -1;
-    }
-
+    EngineSession sess;
+    init_engine_session(sess);
+    cecp_main_loop(sess);
     return 0;
 }

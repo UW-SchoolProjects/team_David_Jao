@@ -90,8 +90,7 @@ See LICENSE file for details.
 #ifndef SEARCH_CONFIG_H
 #define SEARCH_CONFIG_H
 
-// Maximum search depth in plies (you can tune this; 64 is plenty for now)
-inline constexpr int MAX_PLY = 64;
+#include "../common/constants.h"
 
 // Aspiration window around last score (e.g. ±25 cp)
 inline const int ASP_WINDOW = 25;

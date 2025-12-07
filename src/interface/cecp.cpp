@@ -1,0 +1,401 @@
+#include "cecp.h"
+
+#include <iostream>
+#include <sstream>
+#include <cstdlib>
+#include <cstdio>
+#include <cctype>
+
+#include "../core/nextMoveGeneration/MoveGenerator.h"   // MoveList, validMoveGeneration
+#include "../core/nextMoveGeneration/MoveApply.h"       // make_move, unmake_move
+#include "../core/board/zobrist.h"
+
+// If you later want to hook in your real search, include those:
+// #include "../core/gameTreeSearch/SearchNextMove.h"
+// #include "../core/gameTreeSearch/SearchConfig.h"
+// #include "../core/gameTreeSearch/eval.h"
+
+// ---------------------------
+// Small helpers
+// ---------------------------
+
+static constexpr const char kEngineName[] = "Team_David_Jao";
+
+static inline int opposite_side(int s) {
+    return s == WHITE ? BLACK : WHITE;
+}
+
+static inline void sq64_to_file_rank(int sq64, char &fileChar, char &rankChar) {
+    int file = sq64 % 8;
+    int rank = sq64 / 8;
+    fileChar = char('a' + file);
+    rankChar = char('1' + rank);
+}
+
+static int piece_from_fen_char(char c) {
+    switch (c) {
+    case 'P': return WPAWN;
+    case 'N': return WKNIGHT;
+    case 'B': return WBISHOP;
+    case 'R': return WROOK;
+    case 'Q': return WQUEEN;
+    case 'K': return WKING;
+    case 'p': return BPAWN;
+    case 'n': return BKNIGHT;
+    case 'b': return BBISHOP;
+    case 'r': return BROOK;
+    case 'q': return BQUEEN;
+    case 'k': return BKING;
+    default:  return -1;
+    }
+}
+
+static bool load_fen(Board &b, const std::string &fen) {
+    std::istringstream iss(fen);
+    std::string placement, stm, castling, ep;
+    int halfmove = 0;
+    int fullmove = 1;
+
+    if (!(iss >> placement >> stm >> castling >> ep >> halfmove >> fullmove)) {
+        return false;
+    }
+
+    clear_board(b);
+
+    int rank = 7;
+    int file = 0;
+    for (char c : placement) {
+        if (c == '/') {
+            if (file != 8 || rank == 0) return false;
+            --rank;
+            file = 0;
+            continue;
+        }
+        if (std::isdigit(static_cast<unsigned char>(c))) {
+            file += c - '0';
+            if (file > 8) return false;
+            continue;
+        }
+
+        int piece = piece_from_fen_char(c);
+        if (piece == -1 || file >= 8 || rank < 0) return false;
+
+        int sq = MAKE_SQUARE(file, rank);
+        b.squares[sq] = piece;
+        ++file;
+    }
+    if (rank != 0 || file != 8) return false;
+
+    if (stm == "w")      b.side = WHITE;
+    else if (stm == "b") b.side = BLACK;
+    else return false;
+
+    b.castling = 0;
+    if (castling != "-") {
+        for (char c : castling) {
+            switch (c) {
+            case 'K': b.castling |= WKCA; break;
+            case 'Q': b.castling |= WQCA; break;
+            case 'k': b.castling |= BKCA; break;
+            case 'q': b.castling |= BQCA; break;
+            default: return false;
+            }
+        }
+    }
+
+    b.ep_square = NO_SQUARE;
+    if (ep != "-") {
+        if (ep.size() != 2) return false;
+        char fileChar = ep[0];
+        char rankChar = ep[1];
+        if (fileChar < 'a' || fileChar > 'h' || rankChar < '1' || rankChar > '8') return false;
+        int f = fileChar - 'a';
+        int r = rankChar - '1';
+        b.ep_square = MAKE_SQUARE(f, r);
+    }
+
+    if (halfmove < 0) halfmove = 0;
+    if (fullmove < 1) fullmove = 1;
+    b.halfmove_clock = halfmove;
+    b.fullmove_number = fullmove;
+
+    rebuild_bitboards(b);
+    b.zobrist_key = compute_zobrist(b);
+    return true;
+}
+
+// ---------------------------
+// Move conversion helpers
+// ---------------------------
+
+std::string move_to_uci(const Move &m) {
+    // Your Move::from()/to() are 0..63 indices.
+    int from64 = m.from();
+    int to64   = m.to();
+
+    char ff, rf, ft, rt;
+    sq64_to_file_rank(from64, ff, rf);
+    sq64_to_file_rank(to64,   ft, rt);
+
+    std::string s;
+    s.reserve(5);
+    s.push_back(ff);
+    s.push_back(rf);
+    s.push_back(ft);
+    s.push_back(rt);
+
+    if (m.isPromotion()) {
+        PieceType pt = m.promotion();
+        char promoChar = 'q';
+        switch (pt) {
+        case KNIGHT: promoChar = 'n'; break;
+        case BISHOP: promoChar = 'b'; break;
+        case ROOK:   promoChar = 'r'; break;
+        case QUEEN:  promoChar = 'q'; break;
+        default:     promoChar = 'q'; break;
+        }
+        s.push_back(promoChar);
+    }
+    return s;
+}
+
+// Generate all legal moves under your forced-capture rule
+static void generate_variant_moves(Board &b, MoveList &out) {
+    out.clear();
+    // validMoveGeneration already:
+    //  - generates pseudolegal moves
+    //  - filters illegal ones with make_move/unmake_move + isInCheck
+    //  - applies the forced-capture rule
+    validMoveGeneration(b, static_cast<Side>(b.side), out, /*captureOnly=*/true);
+}
+
+bool parse_uci_move(Board &b,
+                    const std::string &text,
+                    Move &out_move)
+{
+    MoveList moves;
+    generate_variant_moves(b, moves);
+
+    for (int i = 0; i < moves.count; ++i) {
+        const Move &m = moves.moves[i];
+        if (move_to_uci(m) == text) {
+            out_move = m;
+            return true;
+        }
+    }
+    return false; // illegal or unknown
+}
+
+// For now, choose a move randomly among legal moves.
+// Later, replace this with your real search.
+static Move search_best_move(EngineSession &sess) {
+    MoveList moves;
+    generate_variant_moves(sess.board, moves);
+    if (moves.count == 0) return Move(); // null
+
+    int idx = std::rand() % moves.count;
+    return moves.moves[idx];
+
+    // Example for later:
+    // SearchConfig cfg;
+    // Move best = search_next_move(sess.board, cfg);
+    // return best;
+}
+
+// ---------------------------
+// Session init
+// ---------------------------
+
+void init_engine_session(EngineSession &sess) {
+    clear_board(sess.board);
+    setup_startpos(sess.board);
+    rebuild_bitboards(sess.board);
+
+    sess.side_to_move = WHITE;
+    sess.board.side   = WHITE;
+
+    sess.mode           = EngineMode::FORCE;
+    sess.quit_requested = false;
+    sess.my_time_cs     = 0;
+    sess.opp_time_cs    = 0;
+    sess.last_ping_id   = 0;
+}
+
+// ---------------------------
+// Command handlers
+// ---------------------------
+
+static void handle_xboard(EngineSession&) {
+    // nothing special needed
+}
+
+static void handle_protover(EngineSession&, int version) {
+    (void)version;
+
+    // Minimal feature set to keep XBoard / cutechess happy.
+    std::cout
+        << "feature myname=\"" << kEngineName << "\" variants=\"normal\" "
+        << "setboard=1 usermove=1 ping=1 done=1\n";
+}
+
+static void handle_new(EngineSession &sess) {
+    init_engine_session(sess);
+}
+
+static void handle_force(EngineSession &sess) {
+    sess.mode = EngineMode::FORCE;
+}
+
+static void do_engine_move(EngineSession &sess) {
+    Move best = search_best_move(sess);
+
+    if (best.isNull()) {
+        // No legal moves: mate or stalemate; GUI will send 'result'.
+        return;
+    }
+
+    // Your make_move from MoveApply.h updates:
+    // - squares
+    // - side to move
+    // - castling, ep, clocks
+    // - zobrist
+    bool ok = make_move(sess.board, best);
+    if (!ok) {
+        // This should never happen if moves came from validMoveGeneration.
+        return;
+    }
+
+    sess.side_to_move = sess.board.side;
+
+    std::string s = move_to_uci(best);
+    std::cout << "move " << s << "\n";
+}
+
+static void handle_go(EngineSession &sess) {
+    sess.mode = EngineMode::PLAYING;
+    do_engine_move(sess);
+}
+
+static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
+    Move m;
+    if (!parse_uci_move(sess.board, mvStr, m)) {
+        std::cout << "Illegal move: " << mvStr << "\n";
+        return;
+    }
+
+    bool ok = make_move(sess.board, m);
+    if (!ok) {
+        std::cout << "Illegal move: " << mvStr << "\n";
+        return;
+    }
+
+    sess.side_to_move = sess.board.side;
+
+    if (sess.mode == EngineMode::PLAYING) {
+        do_engine_move(sess);
+    }
+}
+
+static void handle_time(EngineSession &sess, int cs) {
+    sess.my_time_cs = cs;
+}
+
+static void handle_otim(EngineSession &sess, int cs) {
+    sess.opp_time_cs = cs;
+}
+
+static void handle_ping(EngineSession &sess, int id) {
+    sess.last_ping_id = id;
+    std::cout << "pong " << id << "\n";
+}
+
+static void handle_result(EngineSession &sess, const std::string&) {
+    // Game ended; engine goes back to force mode.
+    sess.mode = EngineMode::FORCE;
+}
+
+static void handle_quit(EngineSession &sess) {
+    sess.quit_requested = true;
+}
+
+static void handle_setboard(EngineSession &sess, const std::string &fen) {
+    if (!load_fen(sess.board, fen)) {
+        std::cout << "Illegal position: " << fen << "\n";
+        return;
+    }
+
+    sess.side_to_move = sess.board.side;
+    sess.mode = EngineMode::FORCE;
+}
+
+// ---------------------------
+// Main CECP loop
+// ---------------------------
+
+void cecp_main_loop(EngineSession &sess) {
+    std::string line;
+
+    while (!sess.quit_requested && std::getline(std::cin, line)) {
+        // Strip possible \r from Windows line endings
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (line.empty()) continue;
+
+        std::istringstream iss(line);
+        std::string cmd;
+        iss >> cmd;
+
+        if (cmd == "xboard") {
+            handle_xboard(sess);
+        }
+        else if (cmd == "protover") {
+            int v = 1; iss >> v;
+            handle_protover(sess, v);
+        }
+        else if (cmd == "new") {
+            handle_new(sess);
+        }
+        else if (cmd == "force") {
+            handle_force(sess);
+        }
+        else if (cmd == "go") {
+            handle_go(sess);
+        }
+        else if (cmd == "usermove") {
+            std::string mvStr; iss >> mvStr;
+            handle_usermove(sess, mvStr);
+        }
+        else if (cmd == "time") {
+            int t; iss >> t;
+            handle_time(sess, t);
+        }
+        else if (cmd == "otim") {
+            int t; iss >> t;
+            handle_otim(sess, t);
+        }
+        else if (cmd == "ping") {
+            int id; iss >> id;
+            handle_ping(sess, id);
+        }
+        else if (cmd == "result") {
+            handle_result(sess, line);
+        }
+        else if (cmd == "setboard") {
+            std::string fenRest;
+            std::getline(iss, fenRest);
+            if (!fenRest.empty() && fenRest.front() == ' ') {
+                fenRest.erase(0, fenRest.find_first_not_of(' '));
+            }
+            handle_setboard(sess, fenRest);
+        }
+        else if (cmd == "quit") {
+            handle_quit(sess);
+        }
+        else {
+            // Unknown or unsupported command: safe to ignore.
+        }
+
+        std::fflush(stdout);
+    }
+}

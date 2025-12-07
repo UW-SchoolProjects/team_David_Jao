@@ -122,7 +122,7 @@ struct MoveList
  * Task 2.1.1 — Check detection.
  * Returns true if `side`'s king is currently in check.
  */
-bool isInCheck(Board &board, Side side);
+bool isInCheck(const Board &board, Side side);
 
 /**
  * Generate all *legal* moves for the given side on the given board.

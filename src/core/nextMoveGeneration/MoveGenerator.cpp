@@ -648,7 +648,8 @@ static void applyCaptureOnlyFilter(MoveList &moves)
 
 static void validMoveGeneration_ApproachA(Board &board,
                                           Side side,
-                                          MoveList &outMoves)
+                                          MoveList &outMoves,
+                                          bool captureOnly)
 {
   outMoves.clear();
 
@@ -680,15 +681,17 @@ static void validMoveGeneration_ApproachA(Board &board,
   }
   outMoves.count = writeIdx;
 
-  // 3) Apply forced-capture rule
-  applyCaptureOnlyFilter(outMoves);
+  // 3) Apply forced-capture rule if requested
+  if (captureOnly)
+    applyCaptureOnlyFilter(outMoves);
 }
 
 // --- Public API implementation ---
 
 void validMoveGeneration(Board &board,
                          Side side,
-                         MoveList &outMoves)
+                         MoveList &outMoves,
+                         bool captureOnly)
 {
-  validMoveGeneration_ApproachA(board, side, outMoves);
+  validMoveGeneration_ApproachA(board, side, outMoves, captureOnly);
 }
