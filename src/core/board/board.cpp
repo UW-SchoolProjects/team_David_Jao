@@ -222,21 +222,31 @@ bool load_fen(Board &b, const std::string &fen) {
     if (!(iss >> placement >> stm >> castling >> ep >> halfmove >> fullmove)) {
         return false;
     }
+    // Reject extra tokens beyond the six FEN fields.
+    std::string extra;
+    if (iss >> extra) {
+        return false;
+    }
 
     clear_board(b);
 
     int rank = 7;
     int file = 0;
-    for (char c : placement) {
+    int seen_slashes = 0;
+    for (size_t idx = 0; idx < placement.size(); ++idx) {
+        char c = placement[idx];
         if (c == '/') {
             if (file != 8 || rank == 0) return false;
             --rank;
+            ++seen_slashes;
             file = 0;
             continue;
         }
         if (std::isdigit(static_cast<unsigned char>(c))) {
-            file += c - '0';
-            if (file > 8) return false;
+            int n = c - '0';
+            // Reject zero and any count that would overrun the rank.
+            if (n <= 0 || file + n > 8) return false;
+            file += n;
             continue;
         }
 
@@ -246,11 +256,18 @@ bool load_fen(Board &b, const std::string &fen) {
         int sq = MAKE_SQUARE(file, rank);
         b.squares[sq] = piece;
         ++file;
-    }
-    if (rank != 0 || file != 8) return false;
 
-    if (stm == "w")      b.side = WHITE;
-    else if (stm == "b") b.side = BLACK;
+        // Early guard: no rank may exceed 8 squares.
+        if (file > 8) return false;
+    }
+    // Expect exactly 8 ranks (7 slashes) and complete final rank.
+    if (rank != 0 || file != 8 || seen_slashes != 7) return false;
+
+    // Validate side to move strictly.
+    if (stm.size() != 1) return false;
+    char stm_ch = stm[0];
+    if (stm_ch == 'w')      b.side = WHITE;
+    else if (stm_ch == 'b') b.side = BLACK;
     else return false;
 
     b.castling = 0;
@@ -272,9 +289,16 @@ bool load_fen(Board &b, const std::string &fen) {
         char fileChar = ep[0];
         char rankChar = ep[1];
         if (fileChar < 'a' || fileChar > 'h' || rankChar < '1' || rankChar > '8') return false;
+        // EP square must be on the correct rank for the side to move.
+        if ((b.side == WHITE && rankChar != '6') || (b.side == BLACK && rankChar != '3')) {
+            return false;
+        }
         int f = fileChar - 'a';
         int r = rankChar - '1';
-        b.ep_square = MAKE_SQUARE(f, r);
+        int ep_sq = MAKE_SQUARE(f, r);
+        // EP target square must be empty.
+        if (b.squares[ep_sq] != EMPTY) return false;
+        b.ep_square = ep_sq;
     }
 
     if (halfmove < 0) halfmove = 0;
