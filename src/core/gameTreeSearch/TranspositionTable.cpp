@@ -37,6 +37,7 @@ int TranspositionTable::pack_score(int score, int ply)
 
 int TranspositionTable::unpack_score(int score, int ply)
 {
+
   if (score > SCORE_MATE - MAX_PLY) {
     return score - ply;
   } else if (score < -SCORE_MATE + MAX_PLY) {
