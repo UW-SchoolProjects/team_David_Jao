@@ -43,6 +43,12 @@ enum class TTFlag : uint8_t
  */
 class TranspositionTable {
   public:
+    TranspositionTable() = default;
+    TranspositionTable(const TranspositionTable&) = delete;
+    TranspositionTable& operator=(const TranspositionTable&) = delete;
+    TranspositionTable(TranspositionTable&&) = delete;
+    TranspositionTable& operator=(TranspositionTable&&) = delete;
+
     /**
      * Allocate and size the table based on requested megabytes.
      * Megabytes are interpreted as MB = 1024*1024 bytes.
