@@ -84,7 +84,7 @@ Use of this code is permitted for educational and academic purposes only.
 See LICENSE file for details.
 */
 
-include "cecp.h"
+#include "cecp.h"
 
 #include <iostream>
 #include <sstream>
