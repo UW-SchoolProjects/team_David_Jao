@@ -8,7 +8,19 @@ TranspositionTable TT;
 
 void TranspositionTable::init(std::size_t megabytes)
 {
-  const std::size_t bytes = megabytes * 1024ULL * 1024ULL;
+  // Safely compute bytes and clamp on overflow.
+  const std::size_t maxBytes = std::numeric_limits<std::size_t>::max();
+  const unsigned long long mbBytes = 1024ULL * 1024ULL;
+  std::size_t bytes;
+  if (megabytes > maxBytes / mbBytes)
+  {
+    bytes = maxBytes;
+  }
+  else
+  {
+    bytes = megabytes * mbBytes;
+  }
+
   const std::size_t entrySize = sizeof(TTEntry);
   const std::size_t count = entrySize ? (bytes / entrySize) : 0;
 
@@ -59,7 +71,9 @@ std::size_t TranspositionTable::index_for(uint64_t key) const
 {
   if (tableSize > 1)
   {
-    return key & (tableSize - 1);
+    // Mix upper and lower bits to keep entropy when size_t is 32-bit.
+    uint64_t mixed = key ^ (key >> 32);
+    return static_cast<std::size_t>(mixed) & (tableSize - 1);
   }
   return 0;
 }

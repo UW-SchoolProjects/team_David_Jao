@@ -16,11 +16,15 @@
 struct TTEntry
 {
   uint64_t key = 0;    // Zobrist hash for the stored position
-  int16_t depth = std::numeric_limits<int16_t>::min(); // search depth of this record
   int32_t value = 0;   // stored score (mate scores are packed with ply at store time)
+  int16_t depth = std::numeric_limits<int16_t>::min(); // search depth of this record
   uint8_t flag = 0;    // TTFlag as its underlying value
+  uint8_t _pad = 0;    // explicit pad to keep layout predictable
   Move bestMove{};     // hash move to aid move ordering
 };
+
+static_assert(sizeof(Move) == 4, "Move must remain 4 bytes (packed uint32_t).");
+static_assert(sizeof(TTEntry) % alignof(uint64_t) == 0, "TTEntry alignment unexpected.");
 
 /**
  * Meaning of a stored score relative to the original alpha/beta window.
