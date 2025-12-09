@@ -95,6 +95,7 @@ See LICENSE file for details.
 #include "../core/nextMoveGeneration/MoveGenerator.h"   // MoveList, validMoveGeneration
 #include "../core/nextMoveGeneration/MoveApply.h"       // make_move, unmake_move
 #include "../core/board/zobrist.h"
+#include "../core/gameTreeSearch/TranspositionTable.h"
 
 // If you later want to hook in your real search, include those:
 // #include "../core/gameTreeSearch/SearchNextMove.h"
@@ -201,6 +202,7 @@ void init_engine_session(EngineSession &sess) {
     clear_board(sess.board);
     setup_startpos(sess.board);
     rebuild_bitboards(sess.board);
+    TT.clear();
 
     sess.side_to_move = WHITE;
     sess.board.side   = WHITE;
@@ -315,6 +317,7 @@ static void handle_setboard(EngineSession &sess, const std::string &fen) {
         return;
     }
 
+    TT.clear();
     sess.side_to_move = sess.board.side;
     sess.mode = EngineMode::FORCE;
 }

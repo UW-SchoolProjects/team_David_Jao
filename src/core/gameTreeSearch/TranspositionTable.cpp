@@ -98,12 +98,10 @@ void TranspositionTable::init(std::size_t megabytes)
   const std::size_t maxBytes = std::numeric_limits<std::size_t>::max();
   const unsigned long long mbBytes = 1024ULL * 1024ULL;
   std::size_t bytes;
-  if (megabytes > maxBytes / mbBytes)
-  {
+  if (megabytes > maxBytes / mbBytes) {
     bytes = maxBytes;
   }
-  else
-  {
+  else {
     bytes = megabytes * mbBytes;
   }
 
@@ -112,8 +110,7 @@ void TranspositionTable::init(std::size_t megabytes)
 
   // Round down to nearest power-of-two entry count (for fast masking).
   std::size_t power = 1;
-  while (power * 2 <= count && power <= (std::numeric_limits<std::size_t>::max() / 2))
-  {
+  while (power * 2 <= count && power <= (std::numeric_limits<std::size_t>::max() / 2)) {
     power *= 2;
   }
 
@@ -123,8 +120,7 @@ void TranspositionTable::init(std::size_t megabytes)
 
 void TranspositionTable::clear()
 {
-  for (auto &e : table)
-  {
+  for (auto &e : table) {
     e = TTEntry{};
   }
 }
@@ -155,8 +151,7 @@ int TranspositionTable::unpack_score(int score, int ply)
 
 std::size_t TranspositionTable::index_for(uint64_t key) const
 {
-  if (tableSize > 1)
-  {
+  if (tableSize > 1) {
     // Mix upper and lower bits to keep entropy when size_t is 32-bit.
     uint64_t mixed = key ^ (key >> 32);
     return static_cast<std::size_t>(mixed) & (tableSize - 1);
@@ -164,24 +159,54 @@ std::size_t TranspositionTable::index_for(uint64_t key) const
   return 0;
 }
 
-bool TranspositionTable::probe(uint64_t,
-                               int,
-                               int,
-                               int,
-                               int,
-                               int &,
-                               Move &) const
-{
-  // Not implemented in this task (Epic 3.2 later step).
+bool TranspositionTable::probe(uint64_t key, int depth, int alpha, int beta, int ply, int &outScore, Move &outMove) const {
+  if (tableSize == 0)
+    return false;
+
+  const TTEntry &entry = table[index_for(key)];
+  if (entry.key != key)
+    return false;
+
+  if (entry.depth < depth)
+    return false;
+
+  int score = unpack_score(entry.value, ply);
+  TTFlag flag = static_cast<TTFlag>(entry.flag);
+
+  if (flag == TTFlag::EXACT) {
+    outScore = score;
+    outMove = entry.bestMove;
+    return true;
+  } else if (flag == TTFlag::LOWERBOUND && score >= beta) {
+    outScore = score;
+    outMove = entry.bestMove;
+    return true;
+  } else if (flag == TTFlag::UPPERBOUND && score <= alpha) {
+    outScore = score;
+    outMove = entry.bestMove;
+    return true;
+  }
+
   return false;
 }
 
-void TranspositionTable::store(uint64_t,
-                               int,
-                               int,
-                               TTFlag,
-                               const Move &,
-                               int)
-{
-  // Not implemented in this task (Epic 3.2 later step).
+void TranspositionTable::store(uint64_t key, int depth, int score, TTFlag flag, const Move &bestMove, int ply) {
+  if (tableSize == 0)
+    return;
+
+  TTEntry &entry = table[index_for(key)];
+
+  // Depth-preferred replacement; avoid clobbering deeper entries from other keys.
+  if ((entry.key != key && depth < entry.depth))
+  {
+    return;
+  }
+  if (depth >= entry.depth || entry.key != key)
+  {
+    entry.key = key;
+    entry.depth = static_cast<int16_t>(depth);
+    entry.value = pack_score(score, ply);
+    entry.flag = static_cast<uint8_t>(flag);
+    entry.bestMove = bestMove;
+  }
 }

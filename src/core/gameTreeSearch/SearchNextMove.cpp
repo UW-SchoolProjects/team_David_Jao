@@ -85,7 +85,9 @@ See LICENSE file for details.
 */
 
 #include "SearchNextMove.h"
+#include "TranspositionTable.h"
 #include "../nextMoveGeneration/MoveApply.h"
+#include <algorithm>
 
 // PV table: pvTable[ply][i] is the i-th move in the PV at search ply `ply`.
 static Move pvTable[MAX_PLY][MAX_PLY];
@@ -100,7 +102,22 @@ int search(Board &board,
            int ply,
            EvalFn evalFn)
 {
-  // TODO (Task 3.2): Transposition table probe (TT lookup) can go here.
+  const int alphaOrig = alpha;
+  const uint64_t key = board.zobrist_key;
+
+  int ttScore = 0;
+  Move ttMove;
+  if (TT.probe(key, depth, alpha, beta, ply, ttScore, ttMove))
+  {
+    // Maintain PV on TT hit
+    pvLength[ply] = 0;
+    if (!ttMove.isNull())
+    {
+      pvTable[ply][0] = ttMove;
+      pvLength[ply] = 1;
+    }
+    return ttScore;
+  }
 
   // Initialize PV length for this ply (no moves yet)
   pvLength[ply] = 0;
@@ -110,7 +127,9 @@ int search(Board &board,
   {
     // TODO (Task 3.3): Replace plain eval with quiescence:
     // return qsearch(board, alpha, beta, ply, evalFn);
-    return evalFn(board);
+    int eval = evalFn(board);
+    TT.store(key, depth, eval, TTFlag::EXACT, Move(), ply);
+    return eval;
   }
 
   // --- Generate all legal moves for the side to move ---
@@ -126,19 +145,34 @@ int search(Board &board,
       // Checkmate: side to move has no moves and is in check.
       // Encode mate as a large negative score, slightly adjusted by ply
       // so closer mates are better (for the winning side).
-      return -SCORE_MATE + ply;
+      int mateScore = -SCORE_MATE + ply;
+      TT.store(key, depth, mateScore, TTFlag::EXACT, Move(), ply);
+      return mateScore;
     }
     else
     {
       // Stalemate: draw
+      TT.store(key, depth, 0, TTFlag::EXACT, Move(), ply);
       return 0;
     }
   }
 
   int bestScore = -SCORE_INF;
   Move bestMove; // for PV / TT (not used directly by caller)
+  bool didCutoff = false;
 
-  // TODO (Task 3.2.2): Hash move ordering can go here.
+  // Hash move ordering: search TT move first if present.
+  if (!ttMove.isNull())
+  {
+    for (int i = 0; i < moves.count; ++i)
+    {
+      if (moves.moves[i].raw() == ttMove.raw())
+      {
+        std::swap(moves.moves[0], moves.moves[i]);
+        break;
+      }
+    }
+  }
 
   for (int i = 0; i < moves.count; ++i)
   {
@@ -176,12 +210,24 @@ int search(Board &board,
     // Alpha-beta cutoff
     if (alpha >= beta)
     {
-      // TODO (Task 3.2): Store as BETA node in TT.
+      // Store cutoff as LOWERBOUND with the move that caused it.
+      bestMove = m;
+      TT.store(key, depth, alpha, TTFlag::LOWERBOUND, bestMove, ply);
+      didCutoff = true;
       break;
     }
   }
 
-  // TODO (Task 3.2): Store result in TT with appropriate flag (EXACT / ALPHA / BETA).
+  // Store result in TT with appropriate flag if no earlier cutoff store.
+  if (!didCutoff)
+  {
+    TTFlag storeFlag = TTFlag::EXACT;
+    if (bestScore <= alphaOrig)
+    {
+      storeFlag = TTFlag::UPPERBOUND;
+    }
+    TT.store(key, depth, bestScore, storeFlag, bestMove, ply);
+  }
 
   return bestScore;
 }
