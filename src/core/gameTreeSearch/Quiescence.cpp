@@ -140,19 +140,29 @@ int qsearch(Board &board, int alpha, int beta, int ply, EvalFn evalFn)
     validMoveGeneration(board, sideToMove, moves, /*captureOnly=*/true);
   }
 
-  // No moves: either checkmate/stalemate in check, or quiet leaf
+  // No moves: either checkmate or stalemate
   if (moves.empty()) {
-    int result = inCheck ? (-SCORE_MATE + ply) : standPat;
+    int result;
+    if (inCheck) {
+      // Side to move is checkmated; encode distance-to-mate.
+      result = -(SCORE_MATE - ply);
+    } else {
+      // Stalemate: draw.
+      result = 0;
+    }
     TT.store(key, 0, result, TTFlag::EXACT, Move(), ply);
     return result;
   }
 
   // Simple hash move ordering: try TT move first if present
   if (!ttMove.isNull()) {
-    for (int i = 0; i < moves.count; ++i) {
-      if (moves.moves[i].raw() == ttMove.raw()) {
-        std::swap(moves.moves[0], moves.moves[i]);
-        break;
+    // In capture-only phase, only surface a capture TT move; in check, allow any.
+    if (inCheck || ttMove.isCapture()) {
+      for (int i = 0; i < moves.count; ++i) {
+        if (moves.moves[i].raw() == ttMove.raw()) {
+          std::swap(moves.moves[0], moves.moves[i]);
+          break;
+        }
       }
     }
   }
@@ -183,7 +193,7 @@ int qsearch(Board &board, int alpha, int beta, int ply, EvalFn evalFn)
     }
 
     if (alpha >= beta) {
-      TT.store(key, 0, alpha, TTFlag::LOWERBOUND, bestMove, ply);
+      TT.store(key, 0, alpha, TTFlag::LOWERBOUND, m, ply);
       didCutoff = true;
       break;
     }
