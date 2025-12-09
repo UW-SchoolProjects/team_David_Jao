@@ -86,6 +86,7 @@ See LICENSE file for details.
 
 #include "Quiescence.h"
 #include "TranspositionTable.h"
+#include "SearchNextMove.h"
 #include "../nextMoveGeneration/MoveGenerator.h"
 #include "../nextMoveGeneration/MoveApply.h"
 #include <algorithm>
@@ -109,6 +110,14 @@ int qsearch(Board &board, int alpha, int beta, int ply, EvalFn evalFn)
     int eval = evalFn(board);
     TT.store(key, 0, eval, TTFlag::EXACT, Move(), ply);
     return eval;
+  }
+
+  // 50-move rule or insufficient material → draw
+  extern bool isInsufficientMaterial(const Board &b); // declared in SearchNextMove.cpp
+  if (board.halfmove_clock >= 100 || isInsufficientMaterial(board))
+  {
+    TT.store(key, 0, 0, TTFlag::EXACT, Move(), ply);
+    return 0;
   }
 
   const Side sideToMove = static_cast<Side>(board.side);
@@ -147,8 +156,8 @@ int qsearch(Board &board, int alpha, int beta, int ply, EvalFn evalFn)
       // Side to move is checkmated; encode distance-to-mate.
       result = -(SCORE_MATE - ply);
     } else {
-      // Stalemate: draw.
-      result = 0;
+      // No captures and not in check: stand-pat is the terminal value.
+      result = standPat;
     }
     TT.store(key, 0, result, TTFlag::EXACT, Move(), ply);
     return result;

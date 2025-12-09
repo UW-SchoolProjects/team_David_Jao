@@ -117,6 +117,60 @@ constexpr inline int square0x88ToBitIndex(int sq88)
   return BB_INDEX(sq88 & 7, sq88 >> 4);
 }
 
+// Returns true if `sq64` is attacked by `attacker`.
+static bool isSquareAttacked(const Board &board, Side attacker, int sq64)
+{
+  int rank = sq64 / 8;
+  int file = sq64 % 8;
+  U64 occAll = occ_all(board);
+
+  // Pawn attacks (from the attacker's perspective)
+  if (attacker == WHITE)
+  {
+    if (rank > 0)
+    {
+      if (file > 0 && (bb_of(board, WPAWN) & BIT(sq64 - 9)))
+        return true;
+      if (file < 7 && (bb_of(board, WPAWN) & BIT(sq64 - 7)))
+        return true;
+    }
+  }
+  else
+  {
+    if (rank < 7)
+    {
+      if (file > 0 && (bb_of(board, BPAWN) & BIT(sq64 + 7)))
+        return true;
+      if (file < 7 && (bb_of(board, BPAWN) & BIT(sq64 + 9)))
+        return true;
+    }
+  }
+
+  // Knights
+  if (knightAttacks[sq64] & bb_of(board, (attacker == WHITE ? WKNIGHT : BKNIGHT)))
+    return true;
+
+  // Bishops/Queens (diagonals)
+  U64 diagAttackers =
+      bb_of(board, (attacker == WHITE ? WBISHOP : BBISHOP)) |
+      bb_of(board, (attacker == WHITE ? WQUEEN : BQUEEN));
+  if (diagAttackers && (bishopAttacks(sq64, occAll) & diagAttackers))
+    return true;
+
+  // Rooks/Queens (orthogonal)
+  U64 orthoAttackers =
+      bb_of(board, (attacker == WHITE ? WROOK : BROOK)) |
+      bb_of(board, (attacker == WHITE ? WQUEEN : BQUEEN));
+  if (orthoAttackers && (rookAttacks(sq64, occAll) & orthoAttackers))
+    return true;
+
+  // King adjacency
+  if (kingAttacks[sq64] & bb_of(board, (attacker == WHITE ? WKING : BKING)))
+    return true;
+
+  return false;
+}
+
 // Get captured piece type (PieceType) on a given 0..63 square,
 // using the mailbox board. Returns EMPTY if no piece.
 inline PieceType getCapturedPieceType(const Board &board, int toBitIndex)
@@ -503,107 +557,8 @@ bool isInCheck(const Board &board, Side side)
   }
 
   int kingSq = lsb_index(myKing); // 0..63 index
-  int rank = kingSq / 8;
-  int file = kingSq % 8;
-
-  // 2. Basic occupancy and side setup
   Side opp = (side == WHITE ? BLACK : WHITE);
-  U64 occAll = occ_all(board);
-
-  // 3. Pawn attacks onto king square
-  {
-    U64 oppPawns = bb_of(board, (opp == WHITE ? WPAWN : BPAWN));
-
-    // We work "backwards": from the king square, which squares
-    // could contain an enemy pawn that attacks this square?
-
-    if (opp == WHITE)
-    {
-      // White pawns move up (towards higher ranks) and capture +7 / +9.
-      // So a white pawn that attacks kingSq must sit on kingSq-7 or kingSq-9.
-      if (rank > 0)
-      {
-        if (file > 0)
-        {
-          int fromSq = kingSq - 9;
-          if (fromSq >= 0 && (oppPawns & BIT(fromSq)))
-            return true;
-        }
-        if (file < 7)
-        {
-          int fromSq = kingSq - 7;
-          if (fromSq >= 0 && (oppPawns & BIT(fromSq)))
-            return true;
-        }
-      }
-    }
-    else
-    {
-      // opp == BLACK
-      // Black pawns move down (towards lower ranks) and capture -7 / -9.
-      // So a black pawn that attacks kingSq must sit on kingSq+7 or kingSq+9.
-      if (rank < 7)
-      {
-        if (file > 0)
-        {
-          int fromSq = kingSq + 7;
-          if (fromSq < 64 && (oppPawns & BIT(fromSq)))
-            return true;
-        }
-        if (file < 7)
-        {
-          int fromSq = kingSq + 9;
-          if (fromSq < 64 && (oppPawns & BIT(fromSq)))
-            return true;
-        }
-      }
-    }
-  }
-
-  // 4. Knight attacks
-  {
-    U64 oppKnights = bb_of(board, (opp == WHITE ? WKNIGHT : BKNIGHT));
-    if (knightAttacks[kingSq] & oppKnights)
-      return true;
-  }
-
-  // 5. Diagonal sliders: bishops and queens
-  {
-    U64 oppBishopsQueens =
-        bb_of(board, (opp == WHITE ? WBISHOP : BBISHOP)) |
-        bb_of(board, (opp == WHITE ? WQUEEN : BQUEEN));
-
-    if (oppBishopsQueens)
-    {
-      U64 attacks = bishopAttacks(kingSq, occAll);
-      if (attacks & oppBishopsQueens)
-        return true;
-    }
-  }
-
-  // 6. Orthogonal sliders: rooks and queens
-  {
-    U64 oppRooksQueens =
-        bb_of(board, (opp == WHITE ? WROOK : BROOK)) |
-        bb_of(board, (opp == WHITE ? WQUEEN : BQUEEN));
-
-    if (oppRooksQueens)
-    {
-      U64 attacks = rookAttacks(kingSq, occAll);
-      if (attacks & oppRooksQueens)
-        return true;
-    }
-  }
-
-  // 7. Opponent king adjacency (illegal to have kings touching)
-  {
-    U64 oppKing = bb_of(board, (opp == WHITE ? WKING : BKING));
-    if (kingAttacks[kingSq] & oppKing)
-      return true;
-  }
-
-  // 8. No attackers found
-  return false;
+  return isSquareAttacked(board, opp, kingSq);
 }
 
 /**
@@ -661,6 +616,34 @@ static void validMoveGeneration_ApproachA(Board &board,
   for (int i = 0; i < outMoves.count; ++i)
   {
     const Move m = outMoves.moves[i];
+
+    // Reject castles that start in check or pass through attacked squares.
+    if (m.isCastle())
+    {
+      Side opp = (side == WHITE ? BLACK : WHITE);
+      int from64 = m.from();
+      bool illegalCastle = isSquareAttacked(board, opp, from64);
+
+      if (m.flags() & MF_KING_CASTLE)
+      {
+        int mid = from64 + 1;  // f-file
+        int dest = from64 + 2; // g-file
+        illegalCastle |= isSquareAttacked(board, opp, mid);
+        illegalCastle |= isSquareAttacked(board, opp, dest);
+      }
+      else if (m.flags() & MF_QUEEN_CASTLE)
+      {
+        int mid = from64 - 1;  // d-file
+        int dest = from64 - 2; // c-file
+        illegalCastle |= isSquareAttacked(board, opp, mid);
+        illegalCastle |= isSquareAttacked(board, opp, dest);
+      }
+
+      if (illegalCastle)
+      {
+        continue;
+      }
+    }
 
     if (!make_move(board, m))
     {

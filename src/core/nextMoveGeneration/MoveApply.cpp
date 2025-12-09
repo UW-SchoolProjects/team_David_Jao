@@ -163,7 +163,7 @@ bool make_move(Board &b, const Move &m) {
         strip_castling_for_square(b, to);
     }
 
-    zobrist_update_castling_rights_EP_file(b, st.old_castling, old_ep);
+    zobrist_update_castling_rights_EP_file(b, st.old_castling, old_ep, st.old_side, them);
 
     // --- 4) Handle captures on board + bitboards + hash ---
 

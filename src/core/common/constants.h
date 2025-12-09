@@ -92,6 +92,8 @@ See LICENSE file for details.
 #define ENGINE_CONSTANTS_H
 
 // Maximum ply depth used for search history / PV tables / undo stack.
-inline constexpr int MAX_PLY = 256;
+// Maximum ply depth used for search history / PV tables / undo stack.
+// Bumped to 512 to avoid overflow on very deep lines.
+inline constexpr int MAX_PLY = 512;
 
 #endif // ENGINE_CONSTANTS_H

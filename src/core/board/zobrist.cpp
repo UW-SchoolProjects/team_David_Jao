@@ -222,18 +222,45 @@ void zobrist_update_castling_move(Board &b, CastlingType type) {
     }
 }
 
+static bool ep_capturable_for_side(const Board &b, int ep_square, Side side) {
+    if (ep_square == NO_SQUARE) return false;
 
-void zobrist_update_castling_rights_EP_file(Board &b, int old_castling, int old_ep_square) {
+    int ep_rank = RANK_OF(ep_square);
+    int ep_file = FILE_OF(ep_square);
+    bool ep_capturable = false;
+
+    if (side == WHITE && ep_rank == 5) {
+        if (ep_file > 0) {
+            int sqL = MAKE_SQUARE(ep_file - 1, 5);
+            ep_capturable |= (b.squares[sqL] == WPAWN);
+        }
+        if (ep_file < 7) {
+            int sqR = MAKE_SQUARE(ep_file + 1, 5);
+            ep_capturable |= (b.squares[sqR] == WPAWN);
+        }
+    } else if (side == BLACK && ep_rank == 2) {
+        if (ep_file > 0) {
+            int sqL = MAKE_SQUARE(ep_file - 1, 3);
+            ep_capturable |= (b.squares[sqL] == BPAWN);
+        }
+        if (ep_file < 7) {
+            int sqR = MAKE_SQUARE(ep_file + 1, 3);
+            ep_capturable |= (b.squares[sqR] == BPAWN);
+        }
+    }
+
+    return ep_capturable;
+}
+
+void zobrist_update_castling_rights_EP_file(Board &b, int old_castling, int old_ep_square, Side old_side, Side new_side) {
     // Remove old EP contribution (if any)
-    if (old_ep_square != NO_SQUARE) {
-        int old_file = FILE_OF(old_ep_square);
-        b.zobrist_key ^= Z_EP_FILE[old_file];
+    if (old_ep_square != NO_SQUARE && ep_capturable_for_side(b, old_ep_square, old_side)) {
+        b.zobrist_key ^= Z_EP_FILE[FILE_OF(old_ep_square)];
     }
 
     // Add new EP contribution (if any)
-    if (b.ep_square != NO_SQUARE) {
-        int new_file = FILE_OF(b.ep_square);
-        b.zobrist_key ^= Z_EP_FILE[new_file];
+    if (b.ep_square != NO_SQUARE && ep_capturable_for_side(b, b.ep_square, new_side)) {
+        b.zobrist_key ^= Z_EP_FILE[FILE_OF(b.ep_square)];
     }
 
     // For castling:

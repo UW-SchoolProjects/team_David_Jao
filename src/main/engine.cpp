@@ -85,11 +85,14 @@ See LICENSE file for details.
 */
 
 #include <iostream>
+#include <cstdlib>
+#include <ctime>
 #include "../interface/cecp.h"
 #include "../core/board/zobrist.h"
 #include "../core/gameTreeSearch/TranspositionTable.h"
 
 int main() {
+    std::srand(static_cast<unsigned>(std::time(nullptr)));
     EngineSession sess;
     zobrist_init();
     TT.init(128); // default TT size in MB
