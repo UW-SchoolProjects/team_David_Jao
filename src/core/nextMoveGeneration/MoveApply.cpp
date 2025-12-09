@@ -107,6 +107,11 @@ static inline void strip_castling_for_square(Board &b, int sq) {
 }
 
 bool make_move(Board &b, const Move &m) {
+    // Prevent history overflow
+    if (ply >= MAX_PLY) {
+        return false;
+    }
+
     // Decode move
     const int from64  = m.from();             // 0..63
     const int to64    = m.to();               // 0..63

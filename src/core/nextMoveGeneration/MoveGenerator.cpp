@@ -91,6 +91,12 @@ See LICENSE file for details.
 #include <cassert>
 #include "MoveApply.h"
 
+// External attack tables (implemented in attacks.cpp)
+extern uint64_t knightAttacks[64];
+extern uint64_t kingAttacks[64];
+uint64_t bishopAttacks(int sq, uint64_t occ);
+uint64_t rookAttacks(int sq, uint64_t occ);
+
 // ---------------------------------------------------------
 // Small bitboard utilities
 // ---------------------------------------------------------
@@ -181,16 +187,6 @@ inline PieceType getCapturedPieceType(const Board &board, int toBitIndex)
     return EMPTY;
   return static_cast<PieceType>(type_of(piece)); // piece & 7
 }
-
-// ---------------------------------------------------------
-// External attack tables (implemented in attacks.cpp)
-// ---------------------------------------------------------
-
-extern uint64_t knightAttacks[64];
-extern uint64_t kingAttacks[64];
-
-uint64_t bishopAttacks(int sq, uint64_t occ);
-uint64_t rookAttacks(int sq, uint64_t occ);
 
 // ---------------------------------------------------------
 // Parent Job 1.2: Pseudolegal move generation

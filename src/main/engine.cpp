@@ -89,12 +89,14 @@ See LICENSE file for details.
 #include <ctime>
 #include "../interface/cecp.h"
 #include "../core/board/zobrist.h"
+#include "../core/nextMoveGeneration/attacks.h"
 #include "../core/gameTreeSearch/TranspositionTable.h"
 
 int main() {
     std::srand(static_cast<unsigned>(std::time(nullptr)));
     EngineSession sess;
     zobrist_init();
+    initAttackTables();
     TT.init(128); // default TT size in MB
     init_engine_session(sess);
     cecp_main_loop(sess);
