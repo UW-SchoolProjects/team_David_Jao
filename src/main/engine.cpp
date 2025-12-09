@@ -87,10 +87,12 @@ See LICENSE file for details.
 #include <iostream>
 #include "../interface/cecp.h"
 #include "../core/board/zobrist.h"
+#include "../core/gameTreeSearch/TranspositionTable.h"
 
 int main() {
     EngineSession sess;
     zobrist_init();
+    TT.init(128); // default TT size in MB
     init_engine_session(sess);
     cecp_main_loop(sess);
     return 0;
