@@ -84,214 +84,46 @@ Use of this code is permitted for educational and academic purposes only.
 See LICENSE file for details.
 */
 
-#include "SearchNextMove.h"
-#include "TranspositionTable.h"
-#include "Quiescence.h"
-#include "../nextMoveGeneration/MoveApply.h"
-#include <algorithm>
+#ifndef QUIESCENCE_H
+#define QUIESCENCE_H
 
-// PV table: pvTable[ply][i] is the i-th move in the PV at search ply `ply`.
-static Move pvTable[MAX_PLY][MAX_PLY];
+#include "../nextMoveGeneration/move.h"
+#include "../board/board.h"
+#include "eval.h"
+#include "SearchConfig.h"
 
-// PV length per ply
-static int pvLength[MAX_PLY];
+/**
+ * Quiescence search entry point.
+ *
+ * Intent:
+ *   - Stabilize leaf evaluations by exploring forcing moves (captures, and
+ *     checking moves when in check) to avoid horizon effects.
+ *   - Stand-pat = static eval (side-to-move perspective).
+ *   - Alpha/beta pruning semantics match the main negamax search.
+ *
+ * Conventions:
+ *   - Returns score from the current side-to-move perspective.
+ *   - Uses `evalFn` for stand-pat and leaf static eval; the callback signature
+ *     matches the rest of the engine (`int eval(const Board&)`).
+ *   - Respects MAX_PLY to prevent runaway recursion.
+ *
+ * Move generation policy:
+ *   - If the side to move is in check, generate full legal moves (evasion
+ *     requires quiet king moves).
+ *   - Otherwise, generate captures only if any exist (reuse capture-only
+ *     variant filter); if no captures, stand-pat is the terminal value.
+ *
+ * Parameters:
+ *   board  - mutable board; make/unmake is performed internally.
+ *   alpha  - lower bound (negamax window).
+ *   beta   - upper bound.
+ *   ply    - current ply from root (for MAX_PLY guard and mate scoring).
+ *   evalFn - static evaluation callback; must not mutate the board.
+ *
+ * Return:
+ *   The best score within [alpha, beta] from the perspective of the side to
+ *   move at `board`.
+ */
+int qsearch(Board &board, int alpha, int beta, int ply, EvalFn evalFn);
 
-int search(Board &board,
-           int depth,
-           int alpha,
-           int beta,
-           int ply,
-           EvalFn evalFn)
-{
-  const int alphaOrig = alpha;
-  const uint64_t key = board.zobrist_key;
-
-  int ttScore = 0;
-  Move ttMove;
-  if (TT.probe(key, depth, alpha, beta, ply, ttScore, ttMove))
-  {
-    // Maintain PV on TT hit
-    pvLength[ply] = 0;
-    if (!ttMove.isNull())
-    {
-      pvTable[ply][0] = ttMove;
-      pvLength[ply] = 1;
-    }
-    return ttScore;
-  }
-
-  // Initialize PV length for this ply (no moves yet)
-  pvLength[ply] = 0;
-
-  // --- Depth / leaf handling ---
-  if (depth <= 0)
-  {
-    return qsearch(board, alpha, beta, ply, evalFn);
-  }
-
-  // --- Generate all legal moves for the side to move ---
-  MoveList moves;
-  get_variant_moves(board, static_cast<Side>(board.side), moves);
-
-  if (moves.empty())
-  {
-    Side sideToMove = static_cast<Side>(board.side);
-
-    if (isInCheck(board, sideToMove))
-    {
-      // Checkmate: side to move has no moves and is in check.
-      // Encode mate as a large negative score, slightly adjusted by ply
-      // so closer mates are better (for the winning side).
-      int mateScore = -SCORE_MATE + ply;
-      TT.store(key, depth, mateScore, TTFlag::EXACT, Move(), ply);
-      return mateScore;
-    }
-    else
-    {
-      // Stalemate: draw
-      TT.store(key, depth, 0, TTFlag::EXACT, Move(), ply);
-      return 0;
-    }
-  }
-
-  int bestScore = -SCORE_INF;
-  Move bestMove; // for PV / TT (not used directly by caller)
-  bool didCutoff = false;
-
-  // Hash move ordering: search TT move first if present.
-  if (!ttMove.isNull())
-  {
-    for (int i = 0; i < moves.count; ++i)
-    {
-      if (moves.moves[i].raw() == ttMove.raw())
-      {
-        std::swap(moves.moves[0], moves.moves[i]);
-        break;
-      }
-    }
-  }
-
-  for (int i = 0; i < moves.count; ++i)
-  {
-    Move m = moves.moves[i];
-
-    if (!make_move(board, m))
-      continue; // illegal move; skip
-
-    // Negamax: flip perspective and bounds
-    int score = -search(board, depth - 1, -beta, -alpha, ply + 1, evalFn);
-
-    unmake_move(board);
-
-    if (score > bestScore)
-    {
-      bestScore = score;
-      bestMove = m;
-
-      // --- PV update: this move becomes first move of new PV at this ply ---
-      pvTable[ply][0] = m;
-      pvLength[ply] = pvLength[ply + 1] + 1;
-
-      for (int j = 0; j < pvLength[ply + 1]; ++j)
-      {
-        pvTable[ply][j + 1] = pvTable[ply + 1][j];
-      }
-    }
-
-    if (bestScore > alpha)
-    {
-      alpha = bestScore;
-      // TODO (PV-node info for TT, if desired)
-    }
-
-    // Alpha-beta cutoff
-    if (alpha >= beta)
-    {
-      // Store cutoff as LOWERBOUND with the move that caused it.
-      bestMove = m;
-      TT.store(key, depth, alpha, TTFlag::LOWERBOUND, bestMove, ply);
-      didCutoff = true;
-      break;
-    }
-  }
-
-  // Store result in TT with appropriate flag if no earlier cutoff store.
-  if (!didCutoff)
-  {
-    TTFlag storeFlag = TTFlag::EXACT;
-    if (bestScore <= alphaOrig)
-    {
-      storeFlag = TTFlag::UPPERBOUND;
-    }
-    TT.store(key, depth, bestScore, storeFlag, bestMove, ply);
-  }
-
-  return bestScore;
-}
-
-Move getBestMove(Board &board, int maxDepth, EvalFn evalFn)
-{
-  Move bestMove;     // move to return
-  int bestScore = 0; // last stable root score
-  bool havePV = false;
-
-  // Iterative deepening loop: depths 1..maxDepth
-  for (int depth = 1; depth <= maxDepth; ++depth)
-  {
-    int alpha, beta;
-    int score;
-
-    if (depth == 1)
-    {
-      // First iteration: full-window search.
-      alpha = -SCORE_INF;
-      beta = SCORE_INF;
-      score = search(board, depth, alpha, beta, /*ply=*/0, evalFn);
-    }
-    else
-    {
-      alpha = bestScore - ASP_WINDOW;
-      beta = bestScore + ASP_WINDOW;
-
-      // First try with the narrow window
-      score = search(board, depth, alpha, beta, /*ply=*/0, evalFn);
-
-      // If we fail low or high, re-search with full window
-      if (score <= alpha || score >= beta)
-      {
-        alpha = -SCORE_INF;
-        beta = SCORE_INF;
-        score = search(board, depth, alpha, beta, /*ply=*/0, evalFn);
-      }
-    }
-
-    // After search, PV for this depth is in pvTable[0]
-    if (pvLength[0] > 0)
-    {
-      bestMove = pvTable[0][0];
-      bestScore = score;
-      havePV = true;
-
-      // (Optional) You can print or log the PV line here for debugging:
-      // std::cout << "info depth " << depth << " score cp " << bestScore << " pv ";
-      // for (int i = 0; i < pvLength[0]; ++i) {
-      //   std::cout << pvTable[0][i].toString() << ' ';
-      // }
-      // std::cout << std::endl;
-    }
-    else
-    {
-      // No PV at this depth: no legal moves (mate/stalemate).
-      // We can break early, as deeper searches won't change that.
-      break;
-    }
-  }
-
-  if (!havePV)
-  {
-    // No legal moves from the start position.
-    return Move(); // null move; caller can interpret as game over.
-  }
-
-  return bestMove;
-}
+#endif // QUIESCENCE_H
