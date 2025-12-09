@@ -109,6 +109,13 @@ int search(Board &board,
   Move ttMove;
   if (TT.probe(key, depth, alpha, beta, ply, ttScore, ttMove))
   {
+    // Maintain PV on TT hit
+    pvLength[ply] = 0;
+    if (!ttMove.isNull())
+    {
+      pvTable[ply][0] = ttMove;
+      pvLength[ply] = 1;
+    }
     return ttScore;
   }
 
@@ -152,6 +159,7 @@ int search(Board &board,
 
   int bestScore = -SCORE_INF;
   Move bestMove; // for PV / TT (not used directly by caller)
+  bool didCutoff = false;
 
   // Hash move ordering: search TT move first if present.
   if (!ttMove.isNull())
@@ -202,21 +210,24 @@ int search(Board &board,
     // Alpha-beta cutoff
     if (alpha >= beta)
     {
+      // Store cutoff as LOWERBOUND with the move that caused it.
+      bestMove = m;
+      TT.store(key, depth, alpha, TTFlag::LOWERBOUND, bestMove, ply);
+      didCutoff = true;
       break;
     }
   }
 
-  // Store result in TT with appropriate flag.
-  TTFlag storeFlag = TTFlag::EXACT;
-  if (bestScore <= alphaOrig)
+  // Store result in TT with appropriate flag if no earlier cutoff store.
+  if (!didCutoff)
   {
-    storeFlag = TTFlag::UPPERBOUND;
+    TTFlag storeFlag = TTFlag::EXACT;
+    if (bestScore <= alphaOrig)
+    {
+      storeFlag = TTFlag::UPPERBOUND;
+    }
+    TT.store(key, depth, bestScore, storeFlag, bestMove, ply);
   }
-  else if (bestScore >= beta)
-  {
-    storeFlag = TTFlag::LOWERBOUND;
-  }
-  TT.store(key, depth, bestScore, storeFlag, bestMove, ply);
 
   return bestScore;
 }

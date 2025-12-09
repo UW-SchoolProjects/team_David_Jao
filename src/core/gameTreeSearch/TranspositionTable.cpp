@@ -167,8 +167,6 @@ bool TranspositionTable::probe(uint64_t key, int depth, int alpha, int beta, int
   if (entry.key != key)
     return false;
 
-  outMove = entry.bestMove;
-
   if (entry.depth < depth)
     return false;
 
@@ -177,12 +175,15 @@ bool TranspositionTable::probe(uint64_t key, int depth, int alpha, int beta, int
 
   if (flag == TTFlag::EXACT) {
     outScore = score;
+    outMove = entry.bestMove;
     return true;
   } else if (flag == TTFlag::LOWERBOUND && score >= beta) {
     outScore = score;
+    outMove = entry.bestMove;
     return true;
   } else if (flag == TTFlag::UPPERBOUND && score <= alpha) {
     outScore = score;
+    outMove = entry.bestMove;
     return true;
   }
 
@@ -195,8 +196,12 @@ void TranspositionTable::store(uint64_t key, int depth, int score, TTFlag flag, 
 
   TTEntry &entry = table[index_for(key)];
 
-  // Depth-preferred replacement (also replace on key mismatch).
-  if (entry.key != key || depth >= entry.depth)
+  // Depth-preferred replacement; avoid clobbering deeper entries from other keys.
+  if ((entry.key != key && depth < entry.depth))
+  {
+    return;
+  }
+  if (depth >= entry.depth || entry.key != key)
   {
     entry.key = key;
     entry.depth = static_cast<int16_t>(depth);
