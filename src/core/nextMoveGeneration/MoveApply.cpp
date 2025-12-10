@@ -124,26 +124,11 @@ bool make_move(Board &b, const Move &m) {
     int moved = b.squares[from];
     assert(moved != EMPTY);
 
-    // Reject moves that try to move the wrong color.
-    if (color_of(moved) != b.side) {
-        return rollback_and_fail(st);
-    }
-
     Side us   = static_cast<Side>(b.side);
     Side them = (us == WHITE ? BLACK : WHITE);
 
     // --- 1) Push undo state ---
     UndoState &st = history[ply++];
-
-    st.move                = m;
-    st.moved_piece_full    = moved;      // MUST be the original piece (pawn for promotions)
-    st.captured_piece_full = 0;
-    st.old_castling        = b.castling;
-    st.old_ep_square       = b.ep_square;
-    st.old_halfmove_clock  = b.halfmove_clock;
-    st.old_fullmove_number = b.fullmove_number;
-    st.old_side            = static_cast<Side>(b.side);
-    st.old_zobrist_key     = b.zobrist_key;
 
     auto rollback_and_fail = [&](UndoState &u) {
         // Restore scalar state in case we bail out early (e.g., bogus EP).
@@ -156,6 +141,21 @@ bool make_move(Board &b, const Move &m) {
         --ply;
         return false;
     };
+
+    // Reject moves that try to move the wrong color.
+    if (color_of(moved) != b.side) {
+        return rollback_and_fail(st);
+    }
+
+    st.move                = m;
+    st.moved_piece_full    = moved;      // MUST be the original piece (pawn for promotions)
+    st.captured_piece_full = 0;
+    st.old_castling        = b.castling;
+    st.old_ep_square       = b.ep_square;
+    st.old_halfmove_clock  = b.halfmove_clock;
+    st.old_fullmove_number = b.fullmove_number;
+    st.old_side            = static_cast<Side>(b.side);
+    st.old_zobrist_key     = b.zobrist_key;
 
     // --- 2) Update clocks ---
     if (type_of(moved) == PAWN || (fl & MF_CAPTURE)) {
