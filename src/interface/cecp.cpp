@@ -199,7 +199,7 @@ bool parse_uci_move(Board &b,
 static Move search_best_move(EngineSession &sess) {
     // Use the engine's negamax search with quiescence and basic eval.
     // Depth can be tuned; keep modest for responsiveness.
-    constexpr int searchDepth = 4;
+    constexpr int searchDepth = 6;
     log_msg("search_best_move: starting search depth " + std::to_string(searchDepth));
     Move best = getBestMove(sess.board, searchDepth, basicEvaluate);
     log_msg("search_best_move: search finished");
@@ -325,7 +325,12 @@ static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
     sess.side_to_move = sess.board.side;
     log_board_fen(sess.board, "After usermove");
 
-    log_msg(sess.mode == EngineMode::PLAYING? "play is on": "play not on");
+    // If we were in force mode and the opponent moved, switch to playing and respond.
+    if (sess.mode == EngineMode::FORCE) {
+        sess.mode = EngineMode::PLAYING;
+    }
+
+    log_msg(sess.mode == EngineMode::PLAYING ? "play is on" : "play not on");
     if (sess.mode == EngineMode::PLAYING) {
         do_engine_move(sess);
     }
