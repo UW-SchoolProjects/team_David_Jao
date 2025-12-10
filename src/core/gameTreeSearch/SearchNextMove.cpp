@@ -90,6 +90,14 @@ See LICENSE file for details.
 #include "../nextMoveGeneration/MoveApply.h"
 #include <algorithm>
 
+#ifdef ENGINE_LOGGING
+#include <string>
+#include <iostream>
+static inline void log_msg(const std::string &msg) {
+  std::cerr << "[engine] " << msg << std::endl;
+}
+#endif
+
 // Simple material draw detector (insufficient material).
 bool isInsufficientMaterial(const Board &b)
 {
