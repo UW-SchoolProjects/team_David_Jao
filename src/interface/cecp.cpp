@@ -290,12 +290,14 @@ static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
     log_msg("usermove " + mvStr);
     Move m;
     if (!parse_uci_move(sess.board, mvStr, m)) {
+        log_msg("usermove rejected: not found in legal list");
         std::cout << "Illegal move: " << mvStr << "\n";
         return;
     }
 
     bool ok = make_move(sess.board, m);
     if (!ok) {
+        log_msg("usermove rejected: make_move failed");
         std::cout << "Illegal move: " << mvStr << "\n";
         return;
     }
@@ -316,6 +318,7 @@ static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
 #ifdef ENGINE_AUTO_PLAY
     else {
         // In the unlikely case mode flipped back, still try to move.
+        log_msg("AUTO_PLAY fallback: mode not PLAYING but still moving");
         do_engine_move(sess);
     }
 #endif
