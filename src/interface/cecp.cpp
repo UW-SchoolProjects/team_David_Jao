@@ -356,6 +356,8 @@ void cecp_main_loop(EngineSession &sess) {
         std::string cmd;
         iss >> cmd;
 
+        log_msg(std::string("cmd: ") + cmd + " | line: " + line);
+
         if (cmd == "xboard") {
             handle_xboard(sess);
         }
