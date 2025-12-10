@@ -98,12 +98,30 @@ See LICENSE file for details.
 #include "../core/gameTreeSearch/TranspositionTable.h"
 #include "../core/gameTreeSearch/SearchNextMove.h"
 #include "../core/gameTreeSearch/eval.h"
+#include "../core/board/board.h"
 
 // ---------------------------
 // Small helpers
 // ---------------------------
 
 static constexpr const char kEngineName[] = "Team_David_Jao";
+
+#ifdef ENGINE_LOGGING
+static void log_msg(const std::string &msg) {
+    std::cerr << "[engine] " << msg << std::endl;
+}
+static void log_board_fen(const Board &b, const char *label = nullptr) {
+    std::string fen = dump_fen(b);
+    if (label) {
+        log_msg(std::string(label) + ": " + fen);
+    } else {
+        log_msg("FEN: " + fen);
+    }
+}
+#else
+static inline void log_msg(const std::string &) {}
+static inline void log_board_fen(const Board &, const char * = nullptr) {}
+#endif
 
 static inline int opposite_side(int s) {
     return s == WHITE ? BLACK : WHITE;
@@ -192,6 +210,8 @@ void init_engine_session(EngineSession &sess) {
     setup_startpos(sess.board);
     rebuild_bitboards(sess.board);
     TT.clear();
+    log_msg("Session initialized");
+    log_board_fen(sess.board, "Startpos");
 
     sess.side_to_move = WHITE;
     sess.board.side   = WHITE;
@@ -231,26 +251,31 @@ static void handle_force(EngineSession &sess) {
 static void do_engine_move(EngineSession &sess) {
     Move best = search_best_move(sess);
 
-    if (best.isNull()) {
-        // No legal moves: mate or stalemate; GUI will send 'result'.
-        return;
-    }
+  if (best.isNull()) {
+    log_msg("No legal move to play (null move).");
+    // No legal moves: mate or stalemate; GUI will send 'result'.
+    return;
+  }
 
-    // Your make_move from MoveApply.h updates:
-    // - squares
-    // - side to move
-    // - castling, ep, clocks
-    // - zobrist
-    bool ok = make_move(sess.board, best);
-    if (!ok) {
-        // This should never happen if moves came from validMoveGeneration.
-        return;
-    }
+  std::string s = move_to_uci(best);
 
-    sess.side_to_move = sess.board.side;
+  // Your make_move from MoveApply.h updates:
+  // - squares
+  // - side to move
+  // - castling, ep, clocks
+  // - zobrist
+  bool ok = make_move(sess.board, best);
+  if (!ok) {
+    // This should never happen if moves came from validMoveGeneration.
+    log_msg("make_move failed for engine move " + s);
+    return;
+  }
 
-    std::string s = move_to_uci(best);
-    std::cout << "move " << s << "\n";
+  sess.side_to_move = sess.board.side;
+  log_msg("Engine plays " + s);
+  log_board_fen(sess.board, "After engine move");
+
+  std::cout << "move " << s << "\n";
 }
 
 static void handle_go(EngineSession &sess) {
@@ -259,6 +284,7 @@ static void handle_go(EngineSession &sess) {
 }
 
 static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
+    log_msg("usermove " + mvStr);
     Move m;
     if (!parse_uci_move(sess.board, mvStr, m)) {
         std::cout << "Illegal move: " << mvStr << "\n";
@@ -272,6 +298,7 @@ static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
     }
 
     sess.side_to_move = sess.board.side;
+    log_board_fen(sess.board, "After usermove");
 
     if (sess.mode == EngineMode::PLAYING) {
         do_engine_move(sess);
