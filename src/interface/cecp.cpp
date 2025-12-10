@@ -197,7 +197,9 @@ static Move search_best_move(EngineSession &sess) {
     // Use the engine's negamax search with quiescence and basic eval.
     // Depth can be tuned; keep modest for responsiveness.
     constexpr int searchDepth = 4;
+    log_msg("search_best_move: starting search depth " + std::to_string(searchDepth));
     Move best = getBestMove(sess.board, searchDepth, basicEvaluate);
+    log_msg("search_best_move: search finished");
     return best;
 }
 
