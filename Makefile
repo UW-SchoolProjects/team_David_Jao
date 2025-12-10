@@ -25,8 +25,9 @@ BUILD_DIR = build
 # Output binary
 TARGET = program$(EXE_EXT)
 
-# Find all .cpp files under src/ (recursively)
-SRCS := $(shell find $(SRC_DIR) -name '*.cpp')
+# Find all .cpp files under src/ (recursively), portable across shells
+rwildcard = $(wildcard $1$2) $(foreach d,$(wildcard $1*),$(call rwildcard,$d/,$2))
+SRCS := $(call rwildcard,$(SRC_DIR)/,*.cpp)
 
 # Turn e.g. src/main/engine.cpp -> build/main/engine.o
 OBJS := $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(SRCS))
