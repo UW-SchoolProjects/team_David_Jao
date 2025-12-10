@@ -232,6 +232,8 @@ void init_engine_session(EngineSession &sess) {
 // Command handlers
 // ---------------------------
 
+static void do_engine_move(EngineSession &sess);
+
 static void handle_xboard(EngineSession&) {
     // nothing special needed
 }
@@ -251,6 +253,22 @@ static void handle_new(EngineSession &sess) {
 
 static void handle_force(EngineSession &sess) {
     sess.mode = EngineMode::FORCE;
+}
+
+static void handle_white(EngineSession &sess) {
+    // CECP: set side to move to White and start playing as White.
+    sess.board.side   = WHITE;
+    sess.side_to_move = WHITE;
+    sess.mode         = EngineMode::PLAYING;
+    do_engine_move(sess);
+}
+
+static void handle_black(EngineSession &sess) {
+    // CECP: set side to move to Black and start playing as Black.
+    sess.board.side   = BLACK;
+    sess.side_to_move = BLACK;
+    sess.mode         = EngineMode::PLAYING;
+    do_engine_move(sess);
 }
 
 static void do_engine_move(EngineSession &sess) {
@@ -309,23 +327,9 @@ static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
     sess.side_to_move = sess.board.side;
     log_board_fen(sess.board, "After usermove");
 
-#ifdef ENGINE_AUTO_PLAY
-    if (sess.mode == EngineMode::FORCE) {
-        sess.mode = EngineMode::PLAYING;
-        log_msg("AUTO_PLAY enabled: switching to PLAYING after usermove");
-    }
-#endif
-
     if (sess.mode == EngineMode::PLAYING) {
         do_engine_move(sess);
     }
-#ifdef ENGINE_AUTO_PLAY
-    else {
-        // In the unlikely case mode flipped back, still try to move.
-        log_msg("AUTO_PLAY fallback: mode not PLAYING but still moving");
-        do_engine_move(sess);
-    }
-#endif
 }
 
 static void handle_time(EngineSession &sess, int cs) {
@@ -394,6 +398,12 @@ void cecp_main_loop(EngineSession &sess) {
         }
         else if (cmd == "force") {
             handle_force(sess);
+        }
+        else if (cmd == "white") {
+            handle_white(sess);
+        }
+        else if (cmd == "black") {
+            handle_black(sess);
         }
         else if (cmd == "go") {
             handle_go(sess);
