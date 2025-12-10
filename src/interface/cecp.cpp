@@ -319,7 +319,11 @@ static void handle_go(EngineSession &sess) {
         sess.engine_side = sess.board.side;
     }
     sess.mode = EngineMode::PLAYING;
-    if (!kSelfPlayMode || sess.board.side == sess.engine_side) {
+    if (kSelfPlayMode) {
+        if (sess.board.side == sess.engine_side) {
+            do_engine_move(sess);
+        }
+    } else {
         do_engine_move(sess);
     }
 }
@@ -351,7 +355,11 @@ static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
     }
 
     if (sess.mode == EngineMode::PLAYING) {
-        if (!kSelfPlayMode || sess.board.side == sess.engine_side) {
+        if (kSelfPlayMode) {
+            if (sess.board.side == sess.engine_side) {
+                do_engine_move(sess);
+            }
+        } else {
             do_engine_move(sess);
         }
     }
