@@ -18,6 +18,11 @@ ifeq ($(LOG),1)
 	CXXFLAGS += -DENGINE_LOGGING
 endif
 
+# Enable auto-play after usermove (helps GUIs that don't send 'go') with AUTO_PLAY=1
+ifeq ($(AUTO_PLAY),1)
+	CXXFLAGS += -DENGINE_AUTO_PLAY
+endif
+
 # Build type (optional: make BUILD=debug)
 ifeq ($(BUILD),debug)
 	CXXFLAGS += -g
