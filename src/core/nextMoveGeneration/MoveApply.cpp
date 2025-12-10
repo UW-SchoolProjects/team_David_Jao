@@ -140,6 +140,18 @@ bool make_move(Board &b, const Move &m) {
     st.old_side            = static_cast<Side>(b.side);
     st.old_zobrist_key     = b.zobrist_key;
 
+    auto rollback_and_fail = [&](UndoState &u) {
+        // Restore scalar state in case we bail out early (e.g., bogus EP).
+        b.castling        = u.old_castling;
+        b.ep_square       = u.old_ep_square;
+        b.halfmove_clock  = u.old_halfmove_clock;
+        b.fullmove_number = u.old_fullmove_number;
+        b.side            = u.old_side;
+        b.zobrist_key     = u.old_zobrist_key;
+        --ply;
+        return false;
+    };
+
     // --- 2) Update clocks ---
     if (type_of(moved) == PAWN || (fl & MF_CAPTURE)) {
         b.halfmove_clock = 0;
@@ -179,7 +191,11 @@ bool make_move(Board &b, const Move &m) {
         int victim  = (us == WHITE ? BPAWN : WPAWN);
         st.captured_piece_full = victim;
 
-        assert(b.squares[cap_sq] == victim);
+        // Defensive guard: invalid EP flag -> reject move instead of crashing.
+        if (b.squares[cap_sq] != victim) {
+            return rollback_and_fail(st);
+        }
+
         b.squares[cap_sq] = EMPTY;
 
         // NEW: bitboard – remove captured pawn
