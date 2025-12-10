@@ -141,6 +141,12 @@ int search(Board &board,
            int ply,
            EvalFn evalFn)
 {
+#ifdef ENGINE_LOGGING
+  log_msg("search start depth=" + std::to_string(depth) +
+          " alpha=" + std::to_string(alpha) +
+          " beta=" + std::to_string(beta) +
+          " ply=" + std::to_string(ply));
+#endif
   const int alphaOrig = alpha;
   const uint64_t key = board.zobrist_key;
 
@@ -299,6 +305,9 @@ int search(Board &board,
 
 Move getBestMove(Board &board, int maxDepth, EvalFn evalFn)
 {
+#ifdef ENGINE_LOGGING
+  log_msg("getBestMove start maxDepth=" + std::to_string(maxDepth));
+#endif
   Move bestMove;     // move to return
   int bestScore = 0; // last stable root score
   bool havePV = false;
