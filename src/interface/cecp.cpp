@@ -325,6 +325,7 @@ static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
     sess.side_to_move = sess.board.side;
     log_board_fen(sess.board, "After usermove");
 
+    log_msg(sess.mode == EngineMode::PLAYING? "play is on": "play not on");
     if (sess.mode == EngineMode::PLAYING) {
         do_engine_move(sess);
     }
