@@ -249,11 +249,12 @@ static void handle_force(EngineSession &sess) {
 }
 
 static void do_engine_move(EngineSession &sess) {
+    log_msg("do_engine_move entry");
     Move best = search_best_move(sess);
 
-  if (best.isNull()) {
-    log_msg("No legal move to play (null move).");
-    // No legal moves: mate or stalemate; GUI will send 'result'.
+    if (best.isNull()) {
+        log_msg("No legal move to play (null move).");
+        // No legal moves: mate or stalemate; GUI will send 'result'.
     return;
   }
 
@@ -310,6 +311,12 @@ static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
     if (sess.mode == EngineMode::PLAYING) {
         do_engine_move(sess);
     }
+#ifdef ENGINE_AUTO_PLAY
+    else {
+        // In the unlikely case mode flipped back, still try to move.
+        do_engine_move(sess);
+    }
+#endif
 }
 
 static void handle_time(EngineSession &sess, int cs) {
