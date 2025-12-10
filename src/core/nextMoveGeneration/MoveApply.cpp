@@ -124,6 +124,11 @@ bool make_move(Board &b, const Move &m) {
     int moved = b.squares[from];
     assert(moved != EMPTY);
 
+    // Reject moves that try to move the wrong color.
+    if (color_of(moved) != b.side) {
+        return rollback_and_fail(st);
+    }
+
     Side us   = static_cast<Side>(b.side);
     Side them = (us == WHITE ? BLACK : WHITE);
 
