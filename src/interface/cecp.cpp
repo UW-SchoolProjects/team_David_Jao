@@ -108,6 +108,12 @@ See LICENSE file for details.
 // ---------------------------
 
 static constexpr const char kEngineName[] = "Team_David_Jao";
+// Build-time toggle: define ENGINE_SELFPLAY for engine-vs-engine strict side gating.
+#ifdef ENGINE_SELFPLAY
+static constexpr bool kSelfPlayMode = true;
+#else
+static constexpr bool kSelfPlayMode = false;
+#endif
 
 #ifdef ENGINE_LOGGING
 static void log_msg(const std::string &msg) {
@@ -199,7 +205,7 @@ bool parse_uci_move(Board &b,
 static Move search_best_move(EngineSession &sess) {
     // Use the engine's negamax search with quiescence and basic eval.
     // Depth can be tuned; keep modest for responsiveness.
-    constexpr int searchDepth = 6;
+    constexpr int searchDepth = 10;
     log_msg("search_best_move: starting search depth " + std::to_string(searchDepth));
     Move best = getBestMove(sess.board, searchDepth, basicEvaluate);
     log_msg("search_best_move: search finished");
@@ -221,6 +227,7 @@ void init_engine_session(EngineSession &sess) {
     sess.side_to_move = WHITE;
     sess.board.side   = WHITE;
     sess.engine_side  = WHITE;
+    sess.engine_side_locked = false;
 
     sess.mode           = EngineMode::FORCE;
     sess.quit_requested = false;
@@ -258,6 +265,7 @@ static void handle_force(EngineSession &sess) {
 
 static void handle_white(EngineSession &sess) {
     sess.engine_side = WHITE;
+    sess.engine_side_locked = true;
     sess.mode = EngineMode::PLAYING;
     if (sess.board.side == WHITE) {
         do_engine_move(sess);
@@ -266,6 +274,7 @@ static void handle_white(EngineSession &sess) {
 
 static void handle_black(EngineSession &sess) {
     sess.engine_side = BLACK;
+    sess.engine_side_locked = true;
     sess.mode = EngineMode::PLAYING;
     if (sess.board.side == BLACK) {
         do_engine_move(sess);
@@ -305,8 +314,12 @@ static void do_engine_move(EngineSession &sess) {
 }
 
 static void handle_go(EngineSession &sess) {
+    if (!kSelfPlayMode && !sess.engine_side_locked) {
+        // In human-vs-engine, adopt side to move if no explicit color chosen.
+        sess.engine_side = sess.board.side;
+    }
     sess.mode = EngineMode::PLAYING;
-    if (sess.board.side == sess.engine_side) {
+    if (!kSelfPlayMode || sess.board.side == sess.engine_side) {
         do_engine_move(sess);
     }
 }
@@ -331,8 +344,16 @@ static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
     log_board_fen(sess.board, "After usermove");
 
     log_msg(sess.mode == EngineMode::PLAYING ? "play is on" : "play not on");
-    if (sess.mode == EngineMode::PLAYING && sess.board.side == sess.engine_side) {
-        do_engine_move(sess);
+    if (!kSelfPlayMode && sess.mode == EngineMode::FORCE && !sess.engine_side_locked) {
+        // Human vs engine: adopt side after opponent moves, then respond.
+        sess.engine_side = sess.board.side;
+        sess.mode = EngineMode::PLAYING;
+    }
+
+    if (sess.mode == EngineMode::PLAYING) {
+        if (!kSelfPlayMode || sess.board.side == sess.engine_side) {
+            do_engine_move(sess);
+        }
     }
 }
 

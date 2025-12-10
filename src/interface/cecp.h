@@ -110,6 +110,7 @@ struct EngineSession {
 
     // Which side the engine should play (WHITE or BLACK). Default: WHITE.
     int engine_side = WHITE;
+    bool engine_side_locked = false; // set true after explicit white/black command
 
     bool quit_requested = false;
 
