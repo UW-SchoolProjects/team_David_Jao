@@ -256,19 +256,17 @@ static void handle_force(EngineSession &sess) {
 }
 
 static void handle_white(EngineSession &sess) {
-    // Engine will play White; stay in PLAYING and move immediately if on move.
-    sess.mode = EngineMode::PLAYING;
-    if (sess.board.side == WHITE) {
-        do_engine_move(sess);
-    }
+    // Set side to move to White; remain in force until 'go'.
+    sess.board.side   = WHITE;
+    sess.side_to_move = WHITE;
+    sess.mode         = EngineMode::FORCE;
 }
 
 static void handle_black(EngineSession &sess) {
-    // Engine will play Black; stay in PLAYING and move immediately if on move.
-    sess.mode = EngineMode::PLAYING;
-    if (sess.board.side == BLACK) {
-        do_engine_move(sess);
-    }
+    // Set side to move to Black; remain in force until 'go'.
+    sess.board.side   = BLACK;
+    sess.side_to_move = BLACK;
+    sess.mode         = EngineMode::FORCE;
 }
 
 static void do_engine_move(EngineSession &sess) {
