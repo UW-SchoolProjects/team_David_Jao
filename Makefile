@@ -5,10 +5,12 @@ ifeq ($(TARGET_OS),windows)
 	EXE_EXT = .exe
 	# Static link to ease distribution on Windows; remove -static if undesired.
 	CXXFLAGS = -std=c++17 -Wall -Wextra -Iinclude -MMD -MP -static -static-libstdc++ -static-libgcc
+	MKDIR_P = mkdir
 else
 	CXX = g++
 	EXE_EXT =
 	CXXFLAGS = -std=c++17 -Wall -Wextra -Iinclude -MMD -MP
+	MKDIR_P = mkdir -p
 endif
 
 # Build type (optional: make BUILD=debug)
@@ -42,7 +44,7 @@ $(TARGET): $(OBJS)
 
 # Compile step (creates folders as needed)
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp
-	@mkdir -p $(dir $@)
+	@$(MKDIR_P) $(dir $@)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 # Auto-include dependency files
