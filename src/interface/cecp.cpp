@@ -281,7 +281,8 @@ static void do_engine_move(EngineSession &sess) {
   log_msg("Engine plays " + s);
   log_board_fen(sess.board, "After engine move");
 
-  std::cout << "move " << s << "\n";
+  // Use std::endl to force an immediate flush to the GUI.
+  std::cout << "move " << s << std::endl;
 }
 
 static void handle_go(EngineSession &sess) {
