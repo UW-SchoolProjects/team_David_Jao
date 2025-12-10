@@ -141,7 +141,7 @@ void zobrist_update_en_passant(Board &b, int to, int moved);
 void zobrist_update_castling_move(Board &b, CastlingType type);
 
 // Updates the Zobrist key after a casling rights or EP file changed
-void zobrist_update_castling_rights_EP_file(Board &b, int old_castling, int old_ep_square);
+void zobrist_update_castling_rights_EP_file(Board &b, int old_castling, int old_ep_square, Side old_side, Side new_side);
 
 inline uint64_t zobrist_rand() {
     uint64_t x = rng_state[0];

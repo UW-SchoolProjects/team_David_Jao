@@ -94,4 +94,7 @@ See LICENSE file for details.
 
 Move getBestMove(Board &board, int maxDepth, EvalFn evalFn);
 
+// Utility exposed for draw detection (50-move / insufficient material).
+bool isInsufficientMaterial(const Board &b);
+
 #endif

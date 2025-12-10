@@ -90,6 +90,44 @@ See LICENSE file for details.
 #include "../nextMoveGeneration/MoveApply.h"
 #include <algorithm>
 
+// Simple material draw detector (insufficient material).
+bool isInsufficientMaterial(const Board &b)
+{
+  // If any pawn, rook, or queen exists, it's not insufficient.
+  auto any = [&](int piece) { return bb_of(b, piece) != 0ULL; };
+  if (any(WPAWN) || any(BPAWN) || any(WROOK) || any(BROOK) || any(WQUEEN) || any(BQUEEN))
+    return false;
+
+  bool whiteMinor = bb_of(b, WKNIGHT) || bb_of(b, WBISHOP);
+  bool blackMinor = bb_of(b, BKNIGHT) || bb_of(b, BBISHOP);
+  int whiteMinorCount = popcount(bb_of(b, WKNIGHT)) + popcount(bb_of(b, WBISHOP));
+  int blackMinorCount = popcount(bb_of(b, BKNIGHT)) + popcount(bb_of(b, BBISHOP));
+
+  // Only kings
+  if (!whiteMinor && !blackMinor)
+    return true;
+
+  // King + single minor vs king
+  if ((whiteMinorCount == 1 && blackMinorCount == 0) || (whiteMinorCount == 0 && blackMinorCount == 1))
+    return true;
+
+  // King + bishop vs king + bishop with bishops on same color squares.
+  if (whiteMinorCount == 1 && blackMinorCount == 1 &&
+      bb_of(b, WBISHOP) && bb_of(b, BBISHOP))
+  {
+    // Bishops on same color? Use square color of lsb.
+    auto lsb = [](uint64_t bb) { return __builtin_ctzll(bb); };
+    int wSq = lsb(bb_of(b, WBISHOP));
+    int bSq = lsb(bb_of(b, BBISHOP));
+    bool wDark = ((wSq & 1) ^ ((wSq >> 3) & 1)) != 0;
+    bool bDark = ((bSq & 1) ^ ((bSq >> 3) & 1)) != 0;
+    if (wDark == bDark)
+      return true;
+  }
+
+  return false;
+}
+
 // PV table: pvTable[ply][i] is the i-th move in the PV at search ply `ply`.
 static Move pvTable[MAX_PLY][MAX_PLY];
 
@@ -124,6 +162,13 @@ int search(Board &board,
   pvLength[ply] = 0;
 
   // --- Depth / leaf handling ---
+  // 50-move rule or insufficient material → draw
+  if (board.halfmove_clock >= 100 || isInsufficientMaterial(board))
+  {
+    TT.store(key, depth, 0, TTFlag::EXACT, Move(), ply);
+    return 0;
+  }
+
   if (depth <= 0)
   {
     return qsearch(board, alpha, beta, ply, evalFn);
@@ -169,6 +214,29 @@ int search(Board &board,
         break;
       }
     }
+  }
+  else
+  {
+    // Simple ordering: captures first using MVV-LVA, then quiets.
+    static const int piece_values[] = {0, 100, 320, 330, 500, 900, 10000};
+    std::stable_sort(moves.moves, moves.moves + moves.count, [&](const Move &a, const Move &b) {
+      const bool ac = a.isCapture();
+      const bool bc = b.isCapture();
+      if (ac != bc) return ac; // captures before quiets
+
+      if (ac)
+      {
+        int victim_a = piece_values[a.captured()];
+        int victim_b = piece_values[b.captured()];
+        if (victim_a != victim_b) return victim_a > victim_b;
+
+        int attacker_a = piece_values[type_of(board.squares[SQ64_to_0x88(a.from())])];
+        int attacker_b = piece_values[type_of(board.squares[SQ64_to_0x88(b.from())])];
+        return attacker_a < attacker_b;
+      }
+
+      return false; // keep original order for quiets
+    });
   }
 
   for (int i = 0; i < moves.count; ++i)

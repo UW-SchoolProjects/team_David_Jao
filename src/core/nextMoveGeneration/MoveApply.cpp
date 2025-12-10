@@ -107,6 +107,11 @@ static inline void strip_castling_for_square(Board &b, int sq) {
 }
 
 bool make_move(Board &b, const Move &m) {
+    // Prevent history overflow
+    if (ply >= MAX_PLY) {
+        return false;
+    }
+
     // Decode move
     const int from64  = m.from();             // 0..63
     const int to64    = m.to();               // 0..63
@@ -163,7 +168,7 @@ bool make_move(Board &b, const Move &m) {
         strip_castling_for_square(b, to);
     }
 
-    zobrist_update_castling_rights_EP_file(b, st.old_castling, old_ep);
+    zobrist_update_castling_rights_EP_file(b, st.old_castling, old_ep, st.old_side, them);
 
     // --- 4) Handle captures on board + bitboards + hash ---
 

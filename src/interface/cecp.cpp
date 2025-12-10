@@ -96,11 +96,8 @@ See LICENSE file for details.
 #include "../core/nextMoveGeneration/MoveApply.h"       // make_move, unmake_move
 #include "../core/board/zobrist.h"
 #include "../core/gameTreeSearch/TranspositionTable.h"
-
-// If you later want to hook in your real search, include those:
-// #include "../core/gameTreeSearch/SearchNextMove.h"
-// #include "../core/gameTreeSearch/SearchConfig.h"
-// #include "../core/gameTreeSearch/eval.h"
+#include "../core/gameTreeSearch/SearchNextMove.h"
+#include "../core/gameTreeSearch/eval.h"
 
 // ---------------------------
 // Small helpers
@@ -178,20 +175,12 @@ bool parse_uci_move(Board &b,
     return false; // illegal or unknown
 }
 
-// For now, choose a move randomly among legal moves.
-// Later, replace this with your real search.
 static Move search_best_move(EngineSession &sess) {
-    MoveList moves;
-    generate_variant_moves(sess.board, moves);
-    if (moves.count == 0) return Move(); // null
-
-    int idx = std::rand() % moves.count;
-    return moves.moves[idx];
-
-    // Example for later:
-    // SearchConfig cfg;
-    // Move best = search_next_move(sess.board, cfg);
-    // return best;
+    // Use the engine's negamax search with quiescence and basic eval.
+    // Depth can be tuned; keep modest for responsiveness.
+    constexpr int searchDepth = 4;
+    Move best = getBestMove(sess.board, searchDepth, basicEvaluate);
+    return best;
 }
 
 // ---------------------------

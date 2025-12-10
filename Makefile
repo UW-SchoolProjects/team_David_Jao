@@ -1,6 +1,15 @@
 # Compiler and flags
-CXX = g++
-CXXFLAGS = -std=c++17 -Wall -Wextra -Iinclude -MMD -MP
+# Set TARGET_OS=windows to build a 64-bit Windows executable with MinGW; defaults to native toolchain.
+ifeq ($(TARGET_OS),windows)
+	CXX = x86_64-w64-mingw32-g++
+	EXE_EXT = .exe
+	# Static link to ease distribution on Windows; remove -static if undesired.
+	CXXFLAGS = -std=c++17 -Wall -Wextra -Iinclude -MMD -MP -static -static-libstdc++ -static-libgcc
+else
+	CXX = g++
+	EXE_EXT =
+	CXXFLAGS = -std=c++17 -Wall -Wextra -Iinclude -MMD -MP
+endif
 
 # Build type (optional: make BUILD=debug)
 ifeq ($(BUILD),debug)
@@ -14,7 +23,7 @@ SRC_DIR   = src
 BUILD_DIR = build
 
 # Output binary
-TARGET = program
+TARGET = program$(EXE_EXT)
 
 # Find all .cpp files under src/ (recursively)
 SRCS := $(shell find $(SRC_DIR) -name '*.cpp')
