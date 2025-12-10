@@ -300,6 +300,13 @@ static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
     sess.side_to_move = sess.board.side;
     log_board_fen(sess.board, "After usermove");
 
+#ifdef ENGINE_AUTO_PLAY
+    if (sess.mode == EngineMode::FORCE) {
+        sess.mode = EngineMode::PLAYING;
+        log_msg("AUTO_PLAY enabled: switching to PLAYING after usermove");
+    }
+#endif
+
     if (sess.mode == EngineMode::PLAYING) {
         do_engine_move(sess);
     }
