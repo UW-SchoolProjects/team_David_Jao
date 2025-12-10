@@ -217,12 +217,25 @@ int search(Board &board,
   }
   else
   {
-    // Simple ordering: captures first to improve cutoffs.
-    std::stable_sort(moves.moves, moves.moves + moves.count, [](const Move &a, const Move &b) {
+    // Simple ordering: captures first using MVV-LVA, then quiets.
+    static const int piece_values[] = {0, 100, 320, 330, 500, 900, 10000};
+    std::stable_sort(moves.moves, moves.moves + moves.count, [&](const Move &a, const Move &b) {
       const bool ac = a.isCapture();
       const bool bc = b.isCapture();
       if (ac != bc) return ac; // captures before quiets
-      return false;
+
+      if (ac)
+      {
+        int victim_a = piece_values[a.captured()];
+        int victim_b = piece_values[b.captured()];
+        if (victim_a != victim_b) return victim_a > victim_b;
+
+        int attacker_a = piece_values[type_of(board.squares[SQ64_to_0x88(a.from())])];
+        int attacker_b = piece_values[type_of(board.squares[SQ64_to_0x88(b.from())])];
+        return attacker_a < attacker_b;
+      }
+
+      return false; // keep original order for quiets
     });
   }
 
