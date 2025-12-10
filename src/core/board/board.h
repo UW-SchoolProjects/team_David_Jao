@@ -107,7 +107,8 @@ using U64 = unsigned long long;
 #define BB_INDEX(file, rank)  ((rank) * 8 + (file))
 #define BB_INDEX_FROM_0x88(sq)  ( ((sq) & 7) + 8 * ((sq) >> 4) )   // file + 8*rank
 #define BIT(sq64)  (U64(1) << (sq64))
-#define SQ64_to_0x88(sq)  ( MAKE_SQUARE(FILE_OF(sq), RANK_OF(sq)) ) 
+// Convert 0..63 index (a1=0) to 0x88 square.
+#define SQ64_to_0x88(sq)  ( MAKE_SQUARE((sq) & 7, (sq) >> 3) ) 
 
 enum Side { 
     WHITE = 0, 
