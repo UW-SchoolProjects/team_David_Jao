@@ -100,6 +100,9 @@ See LICENSE file for details.
 #include "../core/gameTreeSearch/eval.h"
 #include "../core/board/board.h"
 
+#include <string> // Required for std::to_string()
+#include <iostream> // For printing output
+
 // ---------------------------
 // Small helpers
 // ---------------------------
@@ -294,7 +297,7 @@ static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
         std::cout << "Illegal move: " << mvStr << "\n";
         return;
     }
-
+    log_msg("parsed uci move " + std::to_string(m.from()) + std::to_string(m.to()));
     bool ok = make_move(sess.board, m);
     if (!ok) {
         log_msg("usermove rejected: make_move failed");
@@ -365,6 +368,7 @@ void cecp_main_loop(EngineSession &sess) {
     std::string line;
 
     while (!sess.quit_requested && std::getline(std::cin, line)) {
+        log_msg("raw line" + line);
         // Strip possible \r from Windows line endings
         if (!line.empty() && line.back() == '\r') {
             line.pop_back();
@@ -428,5 +432,6 @@ void cecp_main_loop(EngineSession &sess) {
         }
 
         std::fflush(stdout);
+        log_msg("ready to take command again");
     }
 }
