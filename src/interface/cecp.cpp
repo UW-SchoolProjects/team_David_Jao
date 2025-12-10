@@ -220,6 +220,7 @@ void init_engine_session(EngineSession &sess) {
 
     sess.side_to_move = WHITE;
     sess.board.side   = WHITE;
+    sess.engine_side  = WHITE;
 
     sess.mode           = EngineMode::FORCE;
     sess.quit_requested = false;
@@ -256,13 +257,19 @@ static void handle_force(EngineSession &sess) {
 }
 
 static void handle_white(EngineSession &sess) {
-    // Engine will handle White moves; do not rewrite board.side, just wait for 'go'.
-    sess.mode = EngineMode::FORCE;
+    sess.engine_side = WHITE;
+    sess.mode = EngineMode::PLAYING;
+    if (sess.board.side == WHITE) {
+        do_engine_move(sess);
+    }
 }
 
 static void handle_black(EngineSession &sess) {
-    // Engine will handle Black moves; do not rewrite board.side, just wait for 'go'.
-    sess.mode = EngineMode::FORCE;
+    sess.engine_side = BLACK;
+    sess.mode = EngineMode::PLAYING;
+    if (sess.board.side == BLACK) {
+        do_engine_move(sess);
+    }
 }
 
 static void do_engine_move(EngineSession &sess) {
@@ -299,7 +306,9 @@ static void do_engine_move(EngineSession &sess) {
 
 static void handle_go(EngineSession &sess) {
     sess.mode = EngineMode::PLAYING;
-    do_engine_move(sess);
+    if (sess.board.side == sess.engine_side) {
+        do_engine_move(sess);
+    }
 }
 
 static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
@@ -321,13 +330,8 @@ static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
     sess.side_to_move = sess.board.side;
     log_board_fen(sess.board, "After usermove");
 
-    // If we were in force mode and the opponent moved, switch to playing and respond.
-    if (sess.mode == EngineMode::FORCE) {
-        sess.mode = EngineMode::PLAYING;
-    }
-
     log_msg(sess.mode == EngineMode::PLAYING ? "play is on" : "play not on");
-    if (sess.mode == EngineMode::PLAYING) {
+    if (sess.mode == EngineMode::PLAYING && sess.board.side == sess.engine_side) {
         do_engine_move(sess);
     }
 }
