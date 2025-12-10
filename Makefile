@@ -13,6 +13,11 @@ else
 	MKDIR_P = mkdir -p
 endif
 
+# Enable verbose engine logging with LOG=1
+ifeq ($(LOG),1)
+	CXXFLAGS += -DENGINE_LOGGING
+endif
+
 # Build type (optional: make BUILD=debug)
 ifeq ($(BUILD),debug)
 	CXXFLAGS += -g
