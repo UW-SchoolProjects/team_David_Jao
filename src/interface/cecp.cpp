@@ -256,17 +256,17 @@ static void handle_force(EngineSession &sess) {
 }
 
 static void handle_white(EngineSession &sess) {
-    // CECP: set side to move to White (no auto-move; stay in FORCE).
+    // CECP: set side to move to White and let engine play Black.
     sess.board.side   = WHITE;
     sess.side_to_move = WHITE;
-    sess.mode         = EngineMode::FORCE;
+    sess.mode         = EngineMode::PLAYING;
 }
 
 static void handle_black(EngineSession &sess) {
-    // CECP: set side to move to Black (no auto-move; stay in FORCE).
+    // CECP: set side to move to Black and let engine play White.
     sess.board.side   = BLACK;
     sess.side_to_move = BLACK;
-    sess.mode         = EngineMode::FORCE;
+    sess.mode         = EngineMode::PLAYING;
 }
 
 static void do_engine_move(EngineSession &sess) {
