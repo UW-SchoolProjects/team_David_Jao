@@ -100,6 +100,9 @@ See LICENSE file for details.
 #include "../core/gameTreeSearch/eval.h"
 #include "../core/board/board.h"
 
+#include <string> // Required for std::to_string()
+#include <iostream> // For printing output
+
 // ---------------------------
 // Small helpers
 // ---------------------------
@@ -278,7 +281,8 @@ static void do_engine_move(EngineSession &sess) {
   log_msg("Engine plays " + s);
   log_board_fen(sess.board, "After engine move");
 
-  std::cout << "move " << s << "\n";
+  // Use std::endl to force an immediate flush to the GUI.
+  std::cout << "move " << s << std::endl;
 }
 
 static void handle_go(EngineSession &sess) {
@@ -290,12 +294,14 @@ static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
     log_msg("usermove " + mvStr);
     Move m;
     if (!parse_uci_move(sess.board, mvStr, m)) {
+        log_msg("usermove rejected: not found in legal list");
         std::cout << "Illegal move: " << mvStr << "\n";
         return;
     }
-
+    log_msg("parsed uci move " + std::to_string(m.from()) + std::to_string(m.to()));
     bool ok = make_move(sess.board, m);
     if (!ok) {
+        log_msg("usermove rejected: make_move failed");
         std::cout << "Illegal move: " << mvStr << "\n";
         return;
     }
@@ -316,6 +322,7 @@ static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
 #ifdef ENGINE_AUTO_PLAY
     else {
         // In the unlikely case mode flipped back, still try to move.
+        log_msg("AUTO_PLAY fallback: mode not PLAYING but still moving");
         do_engine_move(sess);
     }
 #endif
@@ -362,6 +369,7 @@ void cecp_main_loop(EngineSession &sess) {
     std::string line;
 
     while (!sess.quit_requested && std::getline(std::cin, line)) {
+        log_msg("raw line: " + line);
         // Strip possible \r from Windows line endings
         if (!line.empty() && line.back() == '\r') {
             line.pop_back();
@@ -425,5 +433,7 @@ void cecp_main_loop(EngineSession &sess) {
         }
 
         std::fflush(stdout);
+        log_msg("ready to take command again");
     }
+    log_msg("I should not be seen");
 }

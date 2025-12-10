@@ -90,6 +90,14 @@ See LICENSE file for details.
 #include "../nextMoveGeneration/MoveApply.h"
 #include <algorithm>
 
+#ifdef ENGINE_LOGGING
+#include <string>
+#include <iostream>
+static inline void log_msg(const std::string &msg) {
+  std::cerr << "[engine] " << msg << std::endl;
+}
+#endif
+
 // Simple material draw detector (insufficient material).
 bool isInsufficientMaterial(const Board &b)
 {
@@ -141,12 +149,12 @@ int search(Board &board,
            int ply,
            EvalFn evalFn)
 {
-#ifdef ENGINE_LOGGING
-  log_msg("search start depth=" + std::to_string(depth) +
-          " alpha=" + std::to_string(alpha) +
-          " beta=" + std::to_string(beta) +
-          " ply=" + std::to_string(ply));
-#endif
+// #ifdef ENGINE_LOGGING
+//   log_msg("search start depth=" + std::to_string(depth) +
+//           " alpha=" + std::to_string(alpha) +
+//           " beta=" + std::to_string(beta) +
+//           " ply=" + std::to_string(ply));
+// #endif
   const int alphaOrig = alpha;
   const uint64_t key = board.zobrist_key;
 

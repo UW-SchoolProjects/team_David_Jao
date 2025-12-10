@@ -141,12 +141,22 @@ int qsearch(Board &board, int alpha, int beta, int ply, EvalFn evalFn)
     }
   }
 
-  // Generate moves: evasions if in check, otherwise captures-only variant
+  // Generate moves: evasions if in check; otherwise only explore captures.
   MoveList moves;
-  if (inCheck) {
-    validMoveGeneration(board, sideToMove, moves, /*captureOnly=*/false);
-  } else {
-    validMoveGeneration(board, sideToMove, moves, /*captureOnly=*/true);
+  validMoveGeneration(board, sideToMove, moves, /*captureOnly=*/false);
+
+  if (!inCheck)
+  {
+    // Keep captures only; quiets would cause unbounded quiescence.
+    int writeIdx = 0;
+    for (int i = 0; i < moves.count; ++i)
+    {
+      if (moves.moves[i].isCapture())
+      {
+        moves.moves[writeIdx++] = moves.moves[i];
+      }
+    }
+    moves.count = writeIdx;
   }
 
   // No moves: either checkmate or stalemate
