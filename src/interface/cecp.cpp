@@ -368,7 +368,7 @@ void cecp_main_loop(EngineSession &sess) {
     std::string line;
 
     while (!sess.quit_requested && std::getline(std::cin, line)) {
-        log_msg("raw line" + line);
+        log_msg("raw line: " + line);
         // Strip possible \r from Windows line endings
         if (!line.empty() && line.back() == '\r') {
             line.pop_back();
@@ -434,4 +434,5 @@ void cecp_main_loop(EngineSession &sess) {
         std::fflush(stdout);
         log_msg("ready to take command again");
     }
+    log_msg("I should not be seen");
 }
