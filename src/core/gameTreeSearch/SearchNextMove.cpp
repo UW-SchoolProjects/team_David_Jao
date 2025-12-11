@@ -88,6 +88,7 @@ See LICENSE file for details.
 #include "TranspositionTable.h"
 #include "Quiescence.h"
 #include "../nextMoveGeneration/MoveApply.h"
+#include "../nextMoveGeneration/attacks.h"
 #include <algorithm>
 #include <vector>
 #include <unordered_map>
@@ -151,6 +152,209 @@ static inline int heuristic_piece_value(int piece)
   static const int vals[] = {0, 100, 320, 330, 500, 900, 10000};
   if (piece < 0 || piece >= static_cast<int>(sizeof(vals) / sizeof(vals[0]))) return 0;
   return vals[piece];
+}
+
+// Bitboard file masks for pawn attack helpers
+static constexpr uint64_t FILE_A = 0x0101010101010101ULL;
+static constexpr uint64_t FILE_H = 0x8080808080808080ULL;
+
+// Return bitboard of pawn attackers (of `side`) to square `sq` (0..63).
+static inline uint64_t pawn_attackers_to(int sq, Side side)
+{
+  uint64_t bb = 1ULL << sq;
+  if (side == WHITE)
+  {
+    // White pawn attackers are on sq-7 (east) and sq-9 (west); mask wraparound
+    uint64_t east = (bb >> 7) & ~FILE_H;
+    uint64_t west = (bb >> 9) & ~FILE_A;
+    return west | east;
+  }
+  else
+  {
+    // Black pawn attackers are on sq+7 (west) and sq+9 (east); mask wraparound
+    uint64_t west = (bb << 7) & ~FILE_A;
+    uint64_t east = (bb << 9) & ~FILE_H;
+    return west | east;
+  }
+}
+
+// Static Exchange Evaluation (swap-off). Returns net material if the
+// capture sequence on the target square is played out with optimal play.
+int static_exchange_eval(const Board &board, const Move &m)
+{
+  if (!m.isCapture())
+    return 0;
+
+  const Side us = static_cast<Side>(board.side);
+  const Side them = (us == WHITE ? BLACK : WHITE);
+
+  const int fromSq64 = m.from();
+  const int toSq64 = m.to();
+  const bool isEP = (m.flags() & MF_EN_PASSANT_CAPTURE) != 0;
+  const int captureSq64 = isEP ? (us == WHITE ? toSq64 - 8 : toSq64 + 8) : toSq64;
+  const int targetSq64 = toSq64;
+
+  const int fromSq88 = SQ64_to_0x88(fromSq64);
+  const int capSq88 = SQ64_to_0x88(captureSq64);
+
+  const int movingPiece = board.squares[fromSq88];
+  if (movingPiece == EMPTY)
+    return 0;
+
+  const PieceType movingType = m.isPromotion() ? m.promotion() : static_cast<PieceType>(type_of(movingPiece));
+  const int victimPiece = isEP ? (us == WHITE ? BPAWN : WPAWN) : board.squares[capSq88];
+  const PieceType victimType = static_cast<PieceType>(type_of(victimPiece));
+
+  if (victimType == EMPTY)
+    return 0;
+
+  uint64_t occ = board.bb_occ;
+  uint64_t bb[16];
+  for (int i = 0; i < 16; ++i) bb[i] = board.bb_piece[i];
+
+  auto clear_bit = [](uint64_t &b, int sq64) { b &= ~(1ULL << sq64); };
+  auto set_bit = [](uint64_t &b, int sq64) { b |= (1ULL << sq64); };
+
+  // Remove moving piece from origin
+  clear_bit(bb[movingPiece], fromSq64);
+  occ &= ~(1ULL << fromSq64);
+
+  // Remove captured pawn in EP, or victim on target square
+  if (isEP)
+  {
+    clear_bit(bb[victimPiece], captureSq64);
+    occ &= ~(1ULL << captureSq64);
+  }
+  else
+  {
+    if (victimPiece != EMPTY)
+    {
+      clear_bit(bb[victimPiece], captureSq64);
+      occ &= ~(1ULL << captureSq64);
+    }
+  }
+
+  // Place moving piece on target
+  const int movingOnTarget = (static_cast<int>(us) << 3) | static_cast<int>(movingType);
+  set_bit(bb[movingOnTarget], targetSq64);
+  occ |= (1ULL << targetSq64);
+
+  int gains[32];
+  gains[0] = heuristic_piece_value(victimType);
+  int depth = 0;
+
+  Side side = them; // opponent to recapture
+  int targetPiece = movingOnTarget;
+
+  auto attackers_of_side = [&](Side s, uint64_t occBB, uint64_t pieces[]) -> uint64_t {
+    uint64_t pawns = pieces[(static_cast<int>(s) << 3) | PAWN];
+    uint64_t knights = pieces[(static_cast<int>(s) << 3) | KNIGHT];
+    uint64_t bishops = pieces[(static_cast<int>(s) << 3) | BISHOP];
+    uint64_t rooks = pieces[(static_cast<int>(s) << 3) | ROOK];
+    uint64_t queens = pieces[(static_cast<int>(s) << 3) | QUEEN];
+    uint64_t kings = pieces[(static_cast<int>(s) << 3) | KING];
+
+    uint64_t bbTarget = 1ULL << targetSq64;
+    uint64_t raw = 0ULL;
+    raw |= pawn_attackers_to(targetSq64, s) & pawns;
+    raw |= knightAttacks[targetSq64] & knights;
+    uint64_t bishopRay = bishopAttacks(targetSq64, occBB);
+    raw |= bishopRay & (bishops | queens);
+    uint64_t rookRay = rookAttacks(targetSq64, occBB);
+    raw |= rookRay & (rooks | queens);
+    raw |= kingAttacks[targetSq64] & kings;
+    raw &= ~bbTarget; // exclude piece currently on target
+
+    // Filter out pinned attackers (removing fromSq while keeping target occupied must not expose own king).
+    if (kings == 0) return raw; // no king info; skip filter
+    int kingSq = __builtin_ctzll(kings);
+    uint64_t oppBish = pieces[((static_cast<int>(s) ^ 1) << 3) | BISHOP] | pieces[((static_cast<int>(s) ^ 1) << 3) | QUEEN];
+    uint64_t oppRook = pieces[((static_cast<int>(s) ^ 1) << 3) | ROOK] | pieces[((static_cast<int>(s) ^ 1) << 3) | QUEEN];
+
+    uint64_t filtered = 0ULL;
+    uint64_t tmp = raw;
+    while (tmp)
+    {
+      uint64_t lsb = tmp & -tmp;
+      int fromSq = __builtin_ctzll(lsb);
+      tmp ^= lsb;
+
+      uint64_t occTest = occBB & ~(1ULL << fromSq); // remove attacker; target stays occupied
+      bool kingDiag = (bishopAttacks(kingSq, occTest) & oppBish) != 0ULL;
+      bool kingOrth = (rookAttacks(kingSq, occTest) & oppRook) != 0ULL;
+      if (!(kingDiag || kingOrth))
+      {
+        filtered |= lsb;
+      }
+    }
+    return filtered;
+  };
+
+  while (true)
+  {
+    uint64_t attackers = attackers_of_side(side, occ, bb);
+    if (!attackers)
+      break;
+
+    // Select least valuable attacker of this side
+    int fromSq = -1;
+    int attackerPiece = -1;
+    auto pick_attacker = [&](PieceType pt, uint64_t mask) -> bool {
+      if (mask == 0) return false;
+      fromSq = __builtin_ctzll(mask);
+      attackerPiece = (static_cast<int>(side) << 3) | static_cast<int>(pt);
+      return true;
+    };
+
+    uint64_t mask;
+    // Pawns
+    mask = attackers & bb[(static_cast<int>(side) << 3) | PAWN];
+    if (pick_attacker(PAWN, mask)) goto found_attacker;
+    // Knights
+    mask = attackers & bb[(static_cast<int>(side) << 3) | KNIGHT];
+    if (pick_attacker(KNIGHT, mask)) goto found_attacker;
+    // Bishops
+    mask = attackers & bb[(static_cast<int>(side) << 3) | BISHOP];
+    if (pick_attacker(BISHOP, mask)) goto found_attacker;
+    // Rooks
+    mask = attackers & bb[(static_cast<int>(side) << 3) | ROOK];
+    if (pick_attacker(ROOK, mask)) goto found_attacker;
+    // Queens
+    mask = attackers & bb[(static_cast<int>(side) << 3) | QUEEN];
+    if (pick_attacker(QUEEN, mask)) goto found_attacker;
+    // Kings
+    mask = attackers & bb[(static_cast<int>(side) << 3) | KING];
+    if (pick_attacker(KING, mask)) goto found_attacker;
+
+  found_attacker:
+    if (attackerPiece == -1)
+      break;
+
+    depth += 1;
+    if (depth >= static_cast<int>(sizeof(gains) / sizeof(gains[0])))
+      break; // safety guard
+
+    gains[depth] = heuristic_piece_value(static_cast<PieceType>(type_of(targetPiece))) - gains[depth - 1];
+
+    // Capture: remove current target piece, move attacker onto target
+    clear_bit(bb[targetPiece], targetSq64);
+    clear_bit(bb[attackerPiece], fromSq);
+    occ &= ~(1ULL << targetSq64);
+    occ &= ~(1ULL << fromSq);
+    targetPiece = attackerPiece;
+    set_bit(bb[targetPiece], targetSq64);
+    occ |= (1ULL << targetSq64);
+
+    side = (side == WHITE ? BLACK : WHITE);
+  }
+
+  // Propagate best achievable scores backward
+  while (--depth >= 0)
+  {
+    gains[depth] = std::max(-gains[depth + 1], gains[depth]);
+  }
+
+  return gains[0];
 }
 
 // Estimate whether a quiet move provokes a favorable forced recapture for the opponent.
@@ -375,6 +579,7 @@ int search(Board &board,
     bool isCapture = false;
     int capScore = 0;
     int attackerVal = 0;
+    int seeScore = 0;
     int quietPenaltyVal = 0;
   };
   std::vector<OrderKey> keys(moves.count);
@@ -386,6 +591,7 @@ int search(Board &board,
     if (k.isCapture)
     {
       k.capScore = captureScore(m);
+      k.seeScore = static_exchange_eval(board, m);
       if (m.isPromotion())
       {
         k.attackerVal = heuristic_piece_value(m.promotion());
@@ -419,6 +625,8 @@ int search(Board &board,
 
     if (ka.isCapture)
     {
+      if ((ka.seeScore >= 0) != (kb.seeScore >= 0)) return ka.seeScore >= 0; // prefer non-losing captures
+      if (ka.seeScore != kb.seeScore) return ka.seeScore > kb.seeScore;
       if (ka.capScore != kb.capScore) return ka.capScore > kb.capScore; // higher MVV-LVA first
       if (ka.attackerVal != kb.attackerVal) return ka.attackerVal < kb.attackerVal; // lighter attacker wins tie
       return false;

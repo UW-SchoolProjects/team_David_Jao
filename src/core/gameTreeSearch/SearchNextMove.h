@@ -97,4 +97,7 @@ Move getBestMove(Board &board, int maxDepth, EvalFn evalFn);
 // Utility exposed for draw detection (50-move / insufficient material).
 bool isInsufficientMaterial(const Board &b);
 
+// Static Exchange Evaluation: net material gain/loss for a capture sequence.
+int static_exchange_eval(const Board &board, const Move &m);
+
 #endif
