@@ -148,6 +148,9 @@ static int pvLength[MAX_PLY];
 // Killer moves: killerMoves[ply][0/1] hold quiet moves causing recent cutoffs.
 static Move killerMoves[MAX_PLY][2];
 
+// History heuristic: history[side][from][to] accumulates quiet move success.
+static int historyTable[2][64][64];
+
 static inline void clear_killers()
 {
   for (int d = 0; d < MAX_PLY; ++d)
@@ -155,6 +158,14 @@ static inline void clear_killers()
     killerMoves[d][0] = Move();
     killerMoves[d][1] = Move();
   }
+}
+
+static inline void clear_history()
+{
+  for (int s = 0; s < 2; ++s)
+    for (int f = 0; f < 64; ++f)
+      for (int t = 0; t < 64; ++t)
+        historyTable[s][f][t] = 0;
 }
 
 static inline void store_killer(int ply, const Move &m)
@@ -174,6 +185,28 @@ static inline void store_killer(int ply, const Move &m)
   }
   killerMoves[ply][1] = killerMoves[ply][0];
   killerMoves[ply][0] = m;
+}
+
+static inline void update_history(const Move &m, Side side, int bonus)
+{
+  if (!m.isQuiet()) return;
+  int from = m.from();
+  int to = m.to();
+  if (from < 0 || from >= 64 || to < 0 || to >= 64) return;
+  int &entry = historyTable[side][from][to];
+  // Clamp to avoid overflow
+  const int maxVal = 1 << 20;
+  entry += bonus;
+  if (entry > maxVal) entry = maxVal;
+  if (entry < -maxVal) entry = -maxVal;
+}
+
+static inline void decay_history()
+{
+  for (int s = 0; s < 2; ++s)
+    for (int f = 0; f < 64; ++f)
+      for (int t = 0; t < 64; ++t)
+        historyTable[s][f][t] >>= 1;
 }
 
 // Lightweight material values for heuristics (SEE placeholder)
@@ -612,6 +645,7 @@ int search(Board &board,
     int attackerVal = 0;
     int seeScore = 0;
     int killerRank = -1; // 0/1 for killer slots, -1 otherwise
+    int historyScore = 0;
     int quietPenaltyVal = 0;
   };
   std::vector<OrderKey> keys(moves.count);
@@ -649,6 +683,13 @@ int search(Board &board,
       if (killerMoves[ply][0].raw() == m.raw()) killerRank = 0;
       else if (killerMoves[ply][1].raw() == m.raw()) killerRank = 1;
       k.killerRank = killerRank;
+      int sideIdx = static_cast<int>(sideToMove);
+      int from = m.from();
+      int to = m.to();
+      if (from >= 0 && from < 64 && to >= 0 && to < 64)
+      {
+        k.historyScore = historyTable[sideIdx][from][to];
+      }
     }
     keys[i] = k;
   }
@@ -677,6 +718,9 @@ int search(Board &board,
       if (kb.killerRank == -1) return true;
       return ka.killerRank < kb.killerRank;
     }
+
+    // Then history heuristic
+    if (ka.historyScore != kb.historyScore) return ka.historyScore > kb.historyScore;
 
     if (ka.quietPenaltyVal != kb.quietPenaltyVal) return ka.quietPenaltyVal < kb.quietPenaltyVal;
     return false; // keep stable order otherwise
@@ -716,6 +760,11 @@ int search(Board &board,
     if (bestScore > alpha)
     {
       alpha = bestScore;
+      if (m.isQuiet() && !m.isCapture())
+      {
+        // Quiet move improved alpha: small history bump
+        update_history(m, sideToMove, 10);
+      }
       // TODO (PV-node info for TT, if desired)
     }
 
@@ -724,6 +773,8 @@ int search(Board &board,
     {
       // Store quiet killers for this ply
       store_killer(ply, m);
+      // Strong bonus for causing cutoff
+      update_history(m, sideToMove, 50);
 
       // Store cutoff as LOWERBOUND with the move that caused it.
       bestMove = m;
@@ -753,6 +804,7 @@ Move getBestMove(Board &board, int maxDepth, EvalFn evalFn)
   log_msg("getBestMove start maxDepth=" + std::to_string(maxDepth));
 #endif
   clear_killers();
+  clear_history();
   Move bestMove;     // move to return
   int bestScore = 0; // last stable root score
   bool havePV = false;
@@ -807,6 +859,9 @@ Move getBestMove(Board &board, int maxDepth, EvalFn evalFn)
       // We can break early, as deeper searches won't change that.
       break;
     }
+
+    // Decay history each completed iteration to keep recency bias
+    decay_history();
   }
 
   if (!havePV)
