@@ -201,9 +201,6 @@ int search(Board &board,
            EvalFn evalFn,
            int captureChainLen,
            int extensionsUsed)
-           EvalFn evalFn,
-           int captureChainLen,
-           int extensionsUsed)
 {
 // #ifdef ENGINE_LOGGING
 //   log_msg("search start depth=" + std::to_string(depth) +
@@ -229,42 +226,7 @@ int search(Board &board,
     return ttScore;
   }
 
-  const Side sideToMove = static_cast<Side>(board.side);
-
   // Generate moves after TT miss so hits avoid move gen cost.
-  MoveList moves;
-  get_variant_moves(board, sideToMove, moves);
-
-  // Capture-chain extension: once per path, trigger after consecutive captures
-  // when the position still forces captures (variant move list is capture-only).
-  const bool forcedCaptures = (moves.count > 0) && moves.moves[0].isCapture();
-  int effectiveDepth = depth;
-  int usedExtensions = extensionsUsed;
-  if (captureChainLen >= CAPTURE_CHAIN_EXTENSION_TRIGGER &&
-      forcedCaptures &&
-      usedExtensions < CAPTURE_CHAIN_EXTENSION_MAX)
-  {
-    effectiveDepth += 1;
-    usedExtensions += 1;
-  }
-
-  // Optional second probe with the effective depth to leverage extended entries.
-  if (effectiveDepth != depth &&
-      TT.probe(key, effectiveDepth, alpha, beta, ply, ttScore, ttMove))
-  {
-    pvLength[ply] = 0;
-    if (!ttMove.isNull())
-    {
-      pvTable[ply][0] = ttMove;
-      pvLength[ply] = 1;
-    }
-    return ttScore;
-  }
-
-  // Initialize PV length for this ply (no moves yet)
-  pvLength[ply] = 0;
-
-  // --- Generate all legal moves for the side to move ---
   MoveList moves;
   get_variant_moves(board, sideToMove, moves);
 
@@ -316,16 +278,17 @@ int search(Board &board,
     return ttScore;
   }
 
+  // Initialize PV length for this ply (no moves yet)
+  pvLength[ply] = 0;
+
   // --- Depth / leaf handling ---
   // 50-move rule or insufficient material → draw
   if (board.halfmove_clock >= 100 || isInsufficientMaterial(board))
   {
     TT.store(key, effectiveDepth, 0, TTFlag::EXACT, Move(), ply);
-    TT.store(key, effectiveDepth, 0, TTFlag::EXACT, Move(), ply);
     return 0;
   }
 
-  if (effectiveDepth <= 0)
   if (effectiveDepth <= 0)
   {
     return qsearch(board, alpha, beta, ply, evalFn);
@@ -340,13 +303,11 @@ int search(Board &board,
       // so closer mates are better (for the winning side).
       int mateScore = -SCORE_MATE + ply;
       TT.store(key, effectiveDepth, mateScore, TTFlag::EXACT, Move(), ply);
-      TT.store(key, effectiveDepth, mateScore, TTFlag::EXACT, Move(), ply);
       return mateScore;
     }
     else
     {
       // Stalemate: draw
-      TT.store(key, effectiveDepth, 0, TTFlag::EXACT, Move(), ply);
       TT.store(key, effectiveDepth, 0, TTFlag::EXACT, Move(), ply);
       return 0;
     }
@@ -405,8 +366,6 @@ int search(Board &board,
     // Negamax: flip perspective and bounds
     int nextChainLen = m.isCapture() ? (captureChainLen + 1) : 0;
     int score = -search(board, effectiveDepth - 1, -beta, -alpha, ply + 1, evalFn, nextChainLen, usedExtensions);
-    int nextChainLen = m.isCapture() ? (captureChainLen + 1) : 0;
-    int score = -search(board, effectiveDepth - 1, -beta, -alpha, ply + 1, evalFn, nextChainLen, usedExtensions);
 
     unmake_move(board);
 
@@ -440,7 +399,6 @@ int search(Board &board,
       // Store cutoff as LOWERBOUND with the move that caused it.
       bestMove = m;
       TT.store(key, effectiveDepth, alpha, TTFlag::LOWERBOUND, bestMove, ply);
-      TT.store(key, effectiveDepth, alpha, TTFlag::LOWERBOUND, bestMove, ply);
       didCutoff = true;
       break;
     }
@@ -454,7 +412,6 @@ int search(Board &board,
     {
       storeFlag = TTFlag::UPPERBOUND;
     }
-    TT.store(key, effectiveDepth, bestScore, storeFlag, bestMove, ply);
     TT.store(key, effectiveDepth, bestScore, storeFlag, bestMove, ply);
   }
 
@@ -482,7 +439,6 @@ Move getBestMove(Board &board, int maxDepth, EvalFn evalFn)
       alpha = -SCORE_INF;
       beta = SCORE_INF;
       score = search(board, depth, alpha, beta, /*ply=*/0, evalFn, /*captureChainLen=*/0, /*extensionsUsed=*/0);
-      score = search(board, depth, alpha, beta, /*ply=*/0, evalFn, /*captureChainLen=*/0, /*extensionsUsed=*/0);
     }
     else
     {
@@ -491,14 +447,12 @@ Move getBestMove(Board &board, int maxDepth, EvalFn evalFn)
 
       // First try with the narrow window
       score = search(board, depth, alpha, beta, /*ply=*/0, evalFn, /*captureChainLen=*/0, /*extensionsUsed=*/0);
-      score = search(board, depth, alpha, beta, /*ply=*/0, evalFn, /*captureChainLen=*/0, /*extensionsUsed=*/0);
 
       // If we fail low or high, re-search with full window
       if (score <= alpha || score >= beta)
       {
         alpha = -SCORE_INF;
         beta = SCORE_INF;
-        score = search(board, depth, alpha, beta, /*ply=*/0, evalFn, /*captureChainLen=*/0, /*extensionsUsed=*/0);
         score = search(board, depth, alpha, beta, /*ply=*/0, evalFn, /*captureChainLen=*/0, /*extensionsUsed=*/0);
       }
     }
