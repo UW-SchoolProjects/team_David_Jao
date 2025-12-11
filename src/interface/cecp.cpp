@@ -331,12 +331,6 @@ static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
     sess.side_to_move = sess.board.side;
     log_board_fen(sess.board, "After usermove");
 
-    // If we were waiting in force mode and it's now our turn (e.g., engine plays black and human opened),
-    // start playing.
-    if (sess.mode == EngineMode::FORCE && sess.board.side == sess.engine_side) {
-        sess.mode = EngineMode::PLAYING;
-    }
-
     log_msg(sess.mode == EngineMode::PLAYING ? "play is on" : "play not on");
     if (sess.mode == EngineMode::PLAYING && sess.board.side == sess.engine_side) {
         do_engine_move(sess);
