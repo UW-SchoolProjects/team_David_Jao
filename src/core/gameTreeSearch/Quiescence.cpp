@@ -193,7 +193,12 @@ int qsearch(Board &board, int alpha, int beta, int ply, EvalFn evalFn)
   for (int i = 0; i < moves.count; ++i) {
     const Move m = moves.moves[i];
 
-    // Optional SEE pruning could go here (omitted for correctness/simplicity)
+    // SEE pruning: skip clearly losing captures when not in check
+    if (!inCheck && m.isCapture()) {
+      if (static_exchange_eval(board, m) < 0) {
+        continue;
+      }
+    }
 
     if (!make_move(board, m))
       continue;
