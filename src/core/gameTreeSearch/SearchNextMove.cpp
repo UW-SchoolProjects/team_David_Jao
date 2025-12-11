@@ -318,6 +318,14 @@ int search(Board &board,
   bool didCutoff = false;
 
   // Hash move ordering: search TT move first if present.
+  auto captureScore = [&](const Move &m) -> int {
+    int victim = heuristic_piece_value(m.captured());
+    int attackerPiece = board.squares[SQ64_to_0x88(m.from())];
+    int attacker = heuristic_piece_value(type_of(attackerPiece));
+    return victim * 10 - attacker; // MVV-LVA scaled to integers
+  };
+
+  int sortStart = 0;
   if (!ttMove.isNull())
   {
     for (int i = 0; i < moves.count; ++i)
@@ -325,36 +333,34 @@ int search(Board &board,
       if (moves.moves[i].raw() == ttMove.raw())
       {
         std::swap(moves.moves[0], moves.moves[i]);
+        sortStart = 1; // keep TT move fixed at front
         break;
       }
     }
   }
-  else
-  {
-    // Simple ordering: captures first using MVV-LVA, then quiets.
-    static const int piece_values[] = {0, 100, 320, 330, 500, 900, 10000};
-    std::stable_sort(moves.moves, moves.moves + moves.count, [&](const Move &a, const Move &b) {
-      const bool ac = a.isCapture();
-      const bool bc = b.isCapture();
-      if (ac != bc) return ac; // captures before quiets
+  std::stable_sort(moves.moves + sortStart, moves.moves + moves.count, [&](const Move &a, const Move &b) {
+    const bool ac = a.isCapture();
+    const bool bc = b.isCapture();
+    if (ac != bc) return ac; // captures before quiets
 
-      if (ac)
-      {
-        int victim_a = piece_values[a.captured()];
-        int victim_b = piece_values[b.captured()];
-        if (victim_a != victim_b) return victim_a > victim_b;
+    if (ac)
+    {
+      int scoreA = captureScore(a);
+      int scoreB = captureScore(b);
+      if (scoreA != scoreB) return scoreA > scoreB; // MVV-LVA desc
 
-        int attacker_a = piece_values[type_of(board.squares[SQ64_to_0x88(a.from())])];
-        int attacker_b = piece_values[type_of(board.squares[SQ64_to_0x88(b.from())])];
-        return attacker_a < attacker_b;
-      }
+      // Secondary key: prefer lighter attacker if scores tie.
+      int attackerA = heuristic_piece_value(type_of(board.squares[SQ64_to_0x88(a.from())]));
+      int attackerB = heuristic_piece_value(type_of(board.squares[SQ64_to_0x88(b.from())]));
+      if (attackerA != attackerB) return attackerA < attackerB;
+      return false; // keep stable order otherwise
+    }
 
-      int pa = quietPenalty(a);
-      int pb = quietPenalty(b);
-      if (pa != pb) return pa < pb;
-      return false; // keep original order for quiets otherwise
-    });
-  }
+    int pa = quietPenalty(a);
+    int pb = quietPenalty(b);
+    if (pa != pb) return pa < pb;
+    return false; // keep original order for quiets otherwise
+  });
 
   for (int i = 0; i < moves.count; ++i)
   {
