@@ -161,8 +161,17 @@ static inline void store_killer(int ply, const Move &m)
 {
   if (!m.isQuiet()) return; // killers only track quiet refutations
   uint32_t raw = m.raw();
-  if (killerMoves[ply][0].raw() == raw || killerMoves[ply][1].raw() == raw)
-    return; // already stored
+  if (killerMoves[ply][0].raw() == raw)
+  {
+    return; // already best killer
+  }
+  if (killerMoves[ply][1].raw() == raw)
+  {
+    // Promote second killer to first
+    killerMoves[ply][1] = killerMoves[ply][0];
+    killerMoves[ply][0] = m;
+    return;
+  }
   killerMoves[ply][1] = killerMoves[ply][0];
   killerMoves[ply][0] = m;
 }
