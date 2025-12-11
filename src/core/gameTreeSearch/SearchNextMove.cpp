@@ -89,6 +89,7 @@ See LICENSE file for details.
 #include "Quiescence.h"
 #include "../nextMoveGeneration/MoveApply.h"
 #include <algorithm>
+#include <vector>
 #include <unordered_map>
 
 #ifdef ENGINE_LOGGING
@@ -318,6 +319,45 @@ int search(Board &board,
   bool didCutoff = false;
 
   // Hash move ordering: search TT move first if present.
+  auto captureScore = [&](const Move &m) -> int {
+    int victimVal = 0;
+    if (m.flags() & MF_EN_PASSANT_CAPTURE)
+    {
+      int to88 = SQ64_to_0x88(m.to());
+      int epSq = (sideToMove == WHITE) ? (to88 - 16) : (to88 + 16); // captured pawn is one rank behind target
+      if (!(epSq & 0x88))
+      {
+        int victimPiece = board.squares[epSq];
+        victimVal = heuristic_piece_value(type_of(victimPiece));
+      }
+    }
+    else
+    {
+      victimVal = heuristic_piece_value(m.captured());
+    }
+
+    int attackerVal = 0;
+    if (m.isPromotion() && m.isCapture())
+    {
+      attackerVal = heuristic_piece_value(m.promotion());
+    }
+    else
+    {
+      int from88 = SQ64_to_0x88(m.from());
+      if (!(from88 & 0x88))
+      {
+        int attackerPiece = board.squares[from88];
+        if (attackerPiece != EMPTY && color_of(attackerPiece) == sideToMove)
+        {
+          attackerVal = heuristic_piece_value(type_of(attackerPiece));
+        }
+      }
+    }
+
+    return victimVal * 10 - attackerVal; // MVV-LVA scaled to integers
+  };
+
+  int sortStart = 0;
   if (!ttMove.isNull())
   {
     for (int i = 0; i < moves.count; ++i)
@@ -325,36 +365,68 @@ int search(Board &board,
       if (moves.moves[i].raw() == ttMove.raw())
       {
         std::swap(moves.moves[0], moves.moves[i]);
+        sortStart = 1; // keep TT move fixed at front
         break;
       }
     }
   }
-  else
+  struct OrderKey
   {
-    // Simple ordering: captures first using MVV-LVA, then quiets.
-    static const int piece_values[] = {0, 100, 320, 330, 500, 900, 10000};
-    std::stable_sort(moves.moves, moves.moves + moves.count, [&](const Move &a, const Move &b) {
-      const bool ac = a.isCapture();
-      const bool bc = b.isCapture();
-      if (ac != bc) return ac; // captures before quiets
-
-      if (ac)
+    bool isCapture = false;
+    int capScore = 0;
+    int attackerVal = 0;
+    int quietPenaltyVal = 0;
+  };
+  std::vector<OrderKey> keys(moves.count);
+  for (int i = 0; i < moves.count; ++i)
+  {
+    const Move &m = moves.moves[i];
+    OrderKey k{};
+    k.isCapture = m.isCapture();
+    if (k.isCapture)
+    {
+      k.capScore = captureScore(m);
+      if (m.isPromotion())
       {
-        int victim_a = piece_values[a.captured()];
-        int victim_b = piece_values[b.captured()];
-        if (victim_a != victim_b) return victim_a > victim_b;
-
-        int attacker_a = piece_values[type_of(board.squares[SQ64_to_0x88(a.from())])];
-        int attacker_b = piece_values[type_of(board.squares[SQ64_to_0x88(b.from())])];
-        return attacker_a < attacker_b;
+        k.attackerVal = heuristic_piece_value(m.promotion());
       }
-
-      int pa = quietPenalty(a);
-      int pb = quietPenalty(b);
-      if (pa != pb) return pa < pb;
-      return false; // keep original order for quiets otherwise
-    });
+      else
+      {
+        int from88 = SQ64_to_0x88(m.from());
+        if (!(from88 & 0x88))
+        {
+          int attackerPiece = board.squares[from88];
+          if (attackerPiece != EMPTY && color_of(attackerPiece) == sideToMove)
+          {
+            k.attackerVal = heuristic_piece_value(type_of(attackerPiece));
+          }
+        }
+      }
+    }
+    else
+    {
+      k.quietPenaltyVal = quietPenalty(m);
+    }
+    keys[i] = k;
   }
+
+  Move *base = moves.moves;
+  std::stable_sort(moves.moves + sortStart, moves.moves + moves.count, [&](const Move &a, const Move &b) {
+    const OrderKey &ka = keys[&a - base];
+    const OrderKey &kb = keys[&b - base];
+
+    if (ka.isCapture != kb.isCapture) return ka.isCapture; // captures before quiets
+
+    if (ka.isCapture)
+    {
+      if (ka.capScore != kb.capScore) return ka.capScore > kb.capScore; // higher MVV-LVA first
+      if (ka.attackerVal != kb.attackerVal) return ka.attackerVal < kb.attackerVal; // lighter attacker wins tie
+      return false;
+    }
+
+    if (ka.quietPenaltyVal != kb.quietPenaltyVal) return ka.quietPenaltyVal < kb.quietPenaltyVal;
+    return false; // keep stable order otherwise
+  });
 
   for (int i = 0; i < moves.count; ++i)
   {
