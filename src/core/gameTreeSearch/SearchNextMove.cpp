@@ -89,6 +89,7 @@ See LICENSE file for details.
 #include "Quiescence.h"
 #include "../nextMoveGeneration/MoveApply.h"
 #include <algorithm>
+#include <unordered_map>
 
 #ifdef ENGINE_LOGGING
 #include <string>
@@ -142,6 +143,56 @@ static Move pvTable[MAX_PLY][MAX_PLY];
 // PV length per ply
 static int pvLength[MAX_PLY];
 
+// Lightweight material values for heuristics (SEE placeholder)
+static inline int heuristic_piece_value(int piece)
+{
+  // Index assumes PieceType encoding 0..6 (EMPTY..KING)
+  static const int vals[] = {0, 100, 320, 330, 500, 900, 10000};
+  if (piece < 0 || piece >= static_cast<int>(sizeof(vals) / sizeof(vals[0]))) return 0;
+  return vals[piece];
+}
+
+// Estimate whether a quiet move provokes a favorable forced recapture for the opponent.
+// Returns penalty in centipawns to be applied to ordering/eval heuristics.
+static int compute_provoke_penalty(Board &board, const Move &quietMove, Side us)
+{
+  // Only apply to quiet moves
+  if (quietMove.isCapture()) return 0;
+
+  if (!make_move(board, quietMove))
+    return 0;
+
+  const Side opp = (us == WHITE ? BLACK : WHITE);
+  MoveList oppMoves;
+  get_variant_moves(board, opp, oppMoves); // variant enforces capture-only if any capture exists
+
+  int penalty = 0;
+  if (!oppMoves.empty() && oppMoves.moves[0].isCapture())
+  {
+    int worst = 0;
+    for (int i = 0; i < oppMoves.count; ++i)
+    {
+      const Move &m = oppMoves.moves[i];
+      if (!m.isCapture()) continue;
+
+      // Placeholder SEE: captured value - attacker value
+      int capturedVal = heuristic_piece_value(m.captured());
+      int attackerPiece = board.squares[SQ64_to_0x88(m.from())];
+      int attackerVal = heuristic_piece_value(type_of(attackerPiece));
+      int gain = capturedVal - attackerVal;
+      if (gain > worst) worst = gain;
+    }
+
+    if (worst >= 0)
+    {
+      penalty = PROVOKE_PENALTY_CP;
+    }
+  }
+
+  unmake_move(board);
+  return penalty;
+}
+
 int search(Board &board,
            int depth,
            int alpha,
@@ -159,6 +210,8 @@ int search(Board &board,
 // #endif
   const int alphaOrig = alpha;
   const uint64_t key = board.zobrist_key;
+  const Side sideToMove = static_cast<Side>(board.side);
+
   int ttScore = 0;
   Move ttMove;
   if (TT.probe(key, depth, alpha, beta, ply, ttScore, ttMove))
@@ -173,11 +226,31 @@ int search(Board &board,
     return ttScore;
   }
 
-  const Side sideToMove = static_cast<Side>(board.side);
-
   // Generate moves after TT miss so hits avoid move gen cost.
   MoveList moves;
   get_variant_moves(board, sideToMove, moves);
+
+  // Precompute provoke penalties for quiet moves at the root (cheap heuristic).
+  std::unordered_map<uint32_t, int> quietPenalties;
+  if (ply == 0)
+  {
+    for (int i = 0; i < moves.count; ++i)
+    {
+      const Move &m = moves.moves[i];
+      if (m.isCapture()) continue;
+      int pen = compute_provoke_penalty(board, m, sideToMove);
+      if (pen > 0)
+      {
+        quietPenalties[m.raw()] = pen;
+      }
+    }
+  }
+
+  auto quietPenalty = [&](const Move &m) -> int {
+    if (ply != 0) return 0;
+    auto it = quietPenalties.find(m.raw());
+    return (it == quietPenalties.end() ? 0 : it->second);
+  };
 
   // Capture-chain extension: once per path, trigger after consecutive captures
   // when the position still forces captures (variant move list is capture-only).
@@ -192,7 +265,7 @@ int search(Board &board,
     usedExtensions += 1;
   }
 
-  // Optional second probe with the effective depth to leverage extended entries.
+  // Optional probe at the extended depth to reuse deeper TT entries
   if (effectiveDepth != depth &&
       TT.probe(key, effectiveDepth, alpha, beta, ply, ttScore, ttMove))
   {
@@ -276,7 +349,10 @@ int search(Board &board,
         return attacker_a < attacker_b;
       }
 
-      return false; // keep original order for quiets
+      int pa = quietPenalty(a);
+      int pb = quietPenalty(b);
+      if (pa != pb) return pa < pb;
+      return false; // keep original order for quiets otherwise
     });
   }
 
@@ -293,9 +369,12 @@ int search(Board &board,
 
     unmake_move(board);
 
-    if (score > bestScore)
+    int penalty = quietPenalty(m);
+    int scoreCmp = (ply == 0 ? score - penalty : score);
+
+    if (scoreCmp > bestScore)
     {
-      bestScore = score;
+      bestScore = scoreCmp;
       bestMove = m;
 
       // --- PV update: this move becomes first move of new PV at this ply ---

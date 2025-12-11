@@ -95,10 +95,11 @@ See LICENSE file for details.
 // Aspiration window around last score (e.g. ±25 cp)
 inline constexpr int ASP_WINDOW = 25;
 
-// Capture-chain extension: trigger after N consecutive captures
+// Capture-chain extension tuning
 inline constexpr int CAPTURE_CHAIN_EXTENSION_TRIGGER = 2;
-
-// Maximum capture-chain extensions per root-to-leaf path
 inline constexpr int CAPTURE_CHAIN_EXTENSION_MAX = 1;
+
+// Penalty (centipawns) for quiet moves that provoke a good forced recapture
+inline constexpr int PROVOKE_PENALTY_CP = 20;
 
 #endif
