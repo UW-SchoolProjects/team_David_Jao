@@ -145,6 +145,37 @@ static Move pvTable[MAX_PLY][MAX_PLY];
 // PV length per ply
 static int pvLength[MAX_PLY];
 
+// Killer moves: killerMoves[ply][0/1] hold quiet moves causing recent cutoffs.
+static Move killerMoves[MAX_PLY][2];
+
+static inline void clear_killers()
+{
+  for (int d = 0; d < MAX_PLY; ++d)
+  {
+    killerMoves[d][0] = Move();
+    killerMoves[d][1] = Move();
+  }
+}
+
+static inline void store_killer(int ply, const Move &m)
+{
+  if (!m.isQuiet()) return; // killers only track quiet refutations
+  uint32_t raw = m.raw();
+  if (killerMoves[ply][0].raw() == raw)
+  {
+    return; // already best killer
+  }
+  if (killerMoves[ply][1].raw() == raw)
+  {
+    // Promote second killer to first
+    killerMoves[ply][1] = killerMoves[ply][0];
+    killerMoves[ply][0] = m;
+    return;
+  }
+  killerMoves[ply][1] = killerMoves[ply][0];
+  killerMoves[ply][0] = m;
+}
+
 // Lightweight material values for heuristics (SEE placeholder)
 static inline int heuristic_piece_value(int piece)
 {
@@ -580,6 +611,7 @@ int search(Board &board,
     int capScore = 0;
     int attackerVal = 0;
     int seeScore = 0;
+    int killerRank = -1; // 0/1 for killer slots, -1 otherwise
     int quietPenaltyVal = 0;
   };
   std::vector<OrderKey> keys(moves.count);
@@ -612,6 +644,11 @@ int search(Board &board,
     else
     {
       k.quietPenaltyVal = quietPenalty(m);
+      // Killer flag: only for quiet moves
+      int killerRank = -1;
+      if (killerMoves[ply][0].raw() == m.raw()) killerRank = 0;
+      else if (killerMoves[ply][1].raw() == m.raw()) killerRank = 1;
+      k.killerRank = killerRank;
     }
     keys[i] = k;
   }
@@ -630,6 +667,15 @@ int search(Board &board,
       if (ka.capScore != kb.capScore) return ka.capScore > kb.capScore; // higher MVV-LVA first
       if (ka.attackerVal != kb.attackerVal) return ka.attackerVal < kb.attackerVal; // lighter attacker wins tie
       return false;
+    }
+
+    // Quiet move ordering: killers first
+    if (ka.killerRank != kb.killerRank)
+    {
+      // Valid killer ranks (0,1) outrank non-killers (-1); lower rank wins ties
+      if (ka.killerRank == -1) return false;
+      if (kb.killerRank == -1) return true;
+      return ka.killerRank < kb.killerRank;
     }
 
     if (ka.quietPenaltyVal != kb.quietPenaltyVal) return ka.quietPenaltyVal < kb.quietPenaltyVal;
@@ -676,6 +722,9 @@ int search(Board &board,
     // Alpha-beta cutoff
     if (alpha >= beta)
     {
+      // Store quiet killers for this ply
+      store_killer(ply, m);
+
       // Store cutoff as LOWERBOUND with the move that caused it.
       bestMove = m;
       TT.store(key, effectiveDepth, alpha, TTFlag::LOWERBOUND, bestMove, ply);
@@ -703,6 +752,7 @@ Move getBestMove(Board &board, int maxDepth, EvalFn evalFn)
 #ifdef ENGINE_LOGGING
   log_msg("getBestMove start maxDepth=" + std::to_string(maxDepth));
 #endif
+  clear_killers();
   Move bestMove;     // move to return
   int bestScore = 0; // last stable root score
   bool havePV = false;
