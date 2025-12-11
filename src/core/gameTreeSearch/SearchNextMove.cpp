@@ -159,9 +159,23 @@ int search(Board &board,
 // #endif
   const int alphaOrig = alpha;
   const uint64_t key = board.zobrist_key;
+  int ttScore = 0;
+  Move ttMove;
+  if (TT.probe(key, depth, alpha, beta, ply, ttScore, ttMove))
+  {
+    // Maintain PV on TT hit
+    pvLength[ply] = 0;
+    if (!ttMove.isNull())
+    {
+      pvTable[ply][0] = ttMove;
+      pvLength[ply] = 1;
+    }
+    return ttScore;
+  }
+
   const Side sideToMove = static_cast<Side>(board.side);
 
-  // Generate moves up front so we can detect whether captures are forced.
+  // Generate moves after TT miss so hits avoid move gen cost.
   MoveList moves;
   get_variant_moves(board, sideToMove, moves);
 
@@ -178,11 +192,10 @@ int search(Board &board,
     usedExtensions += 1;
   }
 
-  int ttScore = 0;
-  Move ttMove;
-  if (TT.probe(key, effectiveDepth, alpha, beta, ply, ttScore, ttMove))
+  // Optional second probe with the effective depth to leverage extended entries.
+  if (effectiveDepth != depth &&
+      TT.probe(key, effectiveDepth, alpha, beta, ply, ttScore, ttMove))
   {
-    // Maintain PV on TT hit
     pvLength[ply] = 0;
     if (!ttMove.isNull())
     {

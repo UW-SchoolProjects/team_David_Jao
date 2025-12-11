@@ -93,12 +93,12 @@ See LICENSE file for details.
 #include "../common/constants.h"
 
 // Aspiration window around last score (e.g. ±25 cp)
-inline const int ASP_WINDOW = 25;
+inline constexpr int ASP_WINDOW = 25;
 
 // Capture-chain extension: trigger after N consecutive captures
-inline const int CAPTURE_CHAIN_EXTENSION_TRIGGER = 2;
+inline constexpr int CAPTURE_CHAIN_EXTENSION_TRIGGER = 2;
 
 // Maximum capture-chain extensions per root-to-leaf path
-inline const int CAPTURE_CHAIN_EXTENSION_MAX = 1;
+inline constexpr int CAPTURE_CHAIN_EXTENSION_MAX = 1;
 
 #endif
