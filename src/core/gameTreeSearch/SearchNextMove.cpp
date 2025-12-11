@@ -694,10 +694,13 @@ int search(Board &board,
     keys[i] = k;
   }
 
-  Move *base = moves.moves;
-  std::stable_sort(moves.moves + sortStart, moves.moves + moves.count, [&](const Move &a, const Move &b) {
-    const OrderKey &ka = keys[&a - base];
-    const OrderKey &kb = keys[&b - base];
+  // Sort by precomputed keys using stable indices to avoid address-based lookups
+  std::vector<int> order(moves.count);
+  for (int i = 0; i < moves.count; ++i) order[i] = i;
+
+  std::stable_sort(order.begin() + sortStart, order.begin() + moves.count, [&](int ia, int ib) {
+    const OrderKey &ka = keys[ia];
+    const OrderKey &kb = keys[ib];
 
     if (ka.isCapture != kb.isCapture) return ka.isCapture; // captures before quiets
 
@@ -725,6 +728,10 @@ int search(Board &board,
     if (ka.quietPenaltyVal != kb.quietPenaltyVal) return ka.quietPenaltyVal < kb.quietPenaltyVal;
     return false; // keep stable order otherwise
   });
+
+  std::vector<Move> reordered(moves.count);
+  for (int i = 0; i < moves.count; ++i) reordered[i] = moves.moves[order[i]];
+  for (int i = 0; i < moves.count; ++i) moves.moves[i] = reordered[i];
 
   for (int i = 0; i < moves.count; ++i)
   {
@@ -804,7 +811,6 @@ Move getBestMove(Board &board, int maxDepth, EvalFn evalFn)
   log_msg("getBestMove start maxDepth=" + std::to_string(maxDepth));
 #endif
   clear_killers();
-  clear_history();
   Move bestMove;     // move to return
   int bestScore = 0; // last stable root score
   bool havePV = false;
