@@ -87,12 +87,16 @@ See LICENSE file for details.
 #include <iostream>
 #include <cstdlib>
 #include <ctime>
+#include <csignal>
 #include "../interface/cecp.h"
 #include "../core/board/zobrist.h"
 #include "../core/nextMoveGeneration/attacks.h"
 #include "../core/gameTreeSearch/TranspositionTable.h"
 
 int main() {
+    // XBoard sends SIGINT to stop pondering; ignore so we stay alive.
+    std::signal(SIGINT, SIG_IGN);
+
     std::srand(static_cast<unsigned>(std::time(nullptr)));
     EngineSession sess;
     zobrist_init();

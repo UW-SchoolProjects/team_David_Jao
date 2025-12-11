@@ -130,6 +130,23 @@ bool make_move(Board &b, const Move &m) {
     // --- 1) Push undo state ---
     UndoState &st = history[ply++];
 
+    auto rollback_and_fail = [&](UndoState &u) {
+        // Restore scalar state in case we bail out early (e.g., bogus EP).
+        b.castling        = u.old_castling;
+        b.ep_square       = u.old_ep_square;
+        b.halfmove_clock  = u.old_halfmove_clock;
+        b.fullmove_number = u.old_fullmove_number;
+        b.side            = u.old_side;
+        b.zobrist_key     = u.old_zobrist_key;
+        --ply;
+        return false;
+    };
+
+    // Reject moves that try to move the wrong color.
+    if (color_of(moved) != b.side) {
+        return rollback_and_fail(st);
+    }
+
     st.move                = m;
     st.moved_piece_full    = moved;      // MUST be the original piece (pawn for promotions)
     st.captured_piece_full = 0;
@@ -179,7 +196,11 @@ bool make_move(Board &b, const Move &m) {
         int victim  = (us == WHITE ? BPAWN : WPAWN);
         st.captured_piece_full = victim;
 
-        assert(b.squares[cap_sq] == victim);
+        // Defensive guard: invalid EP flag -> reject move instead of crashing.
+        if (b.squares[cap_sq] != victim) {
+            return rollback_and_fail(st);
+        }
+
         b.squares[cap_sq] = EMPTY;
 
         // NEW: bitboard – remove captured pawn

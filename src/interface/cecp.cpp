@@ -199,7 +199,7 @@ bool parse_uci_move(Board &b,
 static Move search_best_move(EngineSession &sess) {
     // Use the engine's negamax search with quiescence and basic eval.
     // Depth can be tuned; keep modest for responsiveness.
-    constexpr int searchDepth = 4;
+    constexpr int searchDepth = 7;
     log_msg("search_best_move: starting search depth " + std::to_string(searchDepth));
     Move best = getBestMove(sess.board, searchDepth, basicEvaluate);
     log_msg("search_best_move: search finished");
@@ -220,6 +220,7 @@ void init_engine_session(EngineSession &sess) {
 
     sess.side_to_move = WHITE;
     sess.board.side   = WHITE;
+    sess.engine_side  = WHITE;
 
     sess.mode           = EngineMode::FORCE;
     sess.quit_requested = false;
@@ -231,6 +232,8 @@ void init_engine_session(EngineSession &sess) {
 // ---------------------------
 // Command handlers
 // ---------------------------
+
+static void do_engine_move(EngineSession &sess);
 
 static void handle_xboard(EngineSession&) {
     // nothing special needed
@@ -251,6 +254,22 @@ static void handle_new(EngineSession &sess) {
 
 static void handle_force(EngineSession &sess) {
     sess.mode = EngineMode::FORCE;
+}
+
+static void handle_white(EngineSession &sess) {
+    sess.engine_side = WHITE;
+    sess.mode = EngineMode::PLAYING;
+    if (sess.board.side == WHITE) {
+        do_engine_move(sess);
+    }
+}
+
+static void handle_black(EngineSession &sess) {
+    sess.engine_side = BLACK;
+    sess.mode = EngineMode::PLAYING;
+    if (sess.board.side == BLACK) {
+        do_engine_move(sess);
+    }
 }
 
 static void do_engine_move(EngineSession &sess) {
@@ -287,7 +306,10 @@ static void do_engine_move(EngineSession &sess) {
 
 static void handle_go(EngineSession &sess) {
     sess.mode = EngineMode::PLAYING;
-    do_engine_move(sess);
+    // "go" resumes play with the current engine side; move immediately if it's our turn.
+    if (sess.board.side == sess.engine_side) {
+        do_engine_move(sess);
+    }
 }
 
 static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
@@ -309,23 +331,10 @@ static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
     sess.side_to_move = sess.board.side;
     log_board_fen(sess.board, "After usermove");
 
-#ifdef ENGINE_AUTO_PLAY
-    if (sess.mode == EngineMode::FORCE) {
-        sess.mode = EngineMode::PLAYING;
-        log_msg("AUTO_PLAY enabled: switching to PLAYING after usermove");
-    }
-#endif
-
-    if (sess.mode == EngineMode::PLAYING) {
+    log_msg(sess.mode == EngineMode::PLAYING ? "play is on" : "play not on");
+    if (sess.mode == EngineMode::PLAYING && sess.board.side == sess.engine_side) {
         do_engine_move(sess);
     }
-#ifdef ENGINE_AUTO_PLAY
-    else {
-        // In the unlikely case mode flipped back, still try to move.
-        log_msg("AUTO_PLAY fallback: mode not PLAYING but still moving");
-        do_engine_move(sess);
-    }
-#endif
 }
 
 static void handle_time(EngineSession &sess, int cs) {
@@ -394,6 +403,12 @@ void cecp_main_loop(EngineSession &sess) {
         }
         else if (cmd == "force") {
             handle_force(sess);
+        }
+        else if (cmd == "white") {
+            handle_white(sess);
+        }
+        else if (cmd == "black") {
+            handle_black(sess);
         }
         else if (cmd == "go") {
             handle_go(sess);

@@ -108,6 +108,9 @@ struct EngineSession {
     int        side_to_move;   // WHITE or BLACK (same encoding as Board::side)
     EngineMode mode;           // FORCE or PLAYING
 
+    // Which side the engine should play (WHITE or BLACK). Default: WHITE.
+    int engine_side = WHITE;
+
     bool quit_requested = false;
 
     // clocks in centiseconds (CECP uses centiseconds)

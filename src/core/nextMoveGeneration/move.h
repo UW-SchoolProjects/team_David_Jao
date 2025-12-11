@@ -124,10 +124,10 @@ inline bool operator&(MoveFlag a, MoveFlag b)
  *
  * bits  0–5   from square (0..63)
  * bits  6–11  to square   (0..63)
- * bits 12–15  flags       (MoveFlag, up to 4 bits used)
- * bits 16–19  promotion piece type (PieceType, 0 if none)
- * bits 20–23  captured piece type  (PieceType, 0 if none)
- * bits 24–31  reserved (free for score, ordering, etc.)
+ * bits 12–17  flags       (MoveFlag, up to 6 bits used)
+ * bits 18–21  promotion piece type (PieceType, 0 if none)
+ * bits 22–25  captured piece type  (PieceType, 0 if none)
+ * bits 26–31  reserved (free for score, ordering, etc.)
  *
  * A Move is immutable after construction: no setters are provided.
  */
@@ -171,14 +171,15 @@ private:
   // Bit layout constants
   static constexpr uint32_t FROM_MASK = 0x3F;     // 6 bits
   static constexpr uint32_t TO_MASK = 0xFC0;      // bits 6–11
-  static constexpr uint32_t FLAGS_MASK = 0xF000;  // bits 12–15
-  static constexpr uint32_t PROMO_MASK = 0xF0000; // bits 16–19
-  static constexpr uint32_t CAPT_MASK = 0xF00000; // bits 20–23
+  static constexpr uint32_t FLAGS_FIELD_MASK = 0x3F; // 6 bits for MoveFlag
+  static constexpr uint32_t FLAGS_MASK = 0x3F000;    // bits 12–17
+  static constexpr uint32_t PROMO_MASK = 0x3C0000;   // bits 18–21
+  static constexpr uint32_t CAPT_MASK = 0x3C00000;   // bits 22–25
 
   static constexpr int TO_SHIFT = 6;
   static constexpr int FLAGS_SHIFT = 12;
-  static constexpr int PROMO_SHIFT = 16;
-  static constexpr int CAPT_SHIFT = 20;
+  static constexpr int PROMO_SHIFT = 18;
+  static constexpr int CAPT_SHIFT = 22;
 
   static constexpr uint32_t pack(
       int fromSq,
@@ -187,7 +188,7 @@ private:
       PieceType promo,
       PieceType captured)
   {
-    return (static_cast<uint32_t>(fromSq) & FROM_MASK) | ((static_cast<uint32_t>(toSq) & FROM_MASK) << TO_SHIFT) | ((static_cast<uint32_t>(flags) & 0xF) << FLAGS_SHIFT) | ((static_cast<uint32_t>(promo) & 0xF) << PROMO_SHIFT) | ((static_cast<uint32_t>(captured) & 0xF) << CAPT_SHIFT);
+    return (static_cast<uint32_t>(fromSq) & FROM_MASK) | ((static_cast<uint32_t>(toSq) & FROM_MASK) << TO_SHIFT) | ((static_cast<uint32_t>(flags) & FLAGS_FIELD_MASK) << FLAGS_SHIFT) | ((static_cast<uint32_t>(promo) & 0xF) << PROMO_SHIFT) | ((static_cast<uint32_t>(captured) & 0xF) << CAPT_SHIFT);
   }
 };
 
