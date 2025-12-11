@@ -306,9 +306,9 @@ static void do_engine_move(EngineSession &sess) {
 
 static void handle_go(EngineSession &sess) {
     sess.mode = EngineMode::PLAYING;
-    if (sess.board.side == sess.engine_side) {
-        do_engine_move(sess);
-    }
+    // "go" means: play the side that's on move right now.
+    sess.engine_side = sess.board.side;
+    do_engine_move(sess);
 }
 
 static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
