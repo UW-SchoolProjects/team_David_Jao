@@ -89,6 +89,7 @@ See LICENSE file for details.
 #include "Quiescence.h"
 #include "../nextMoveGeneration/MoveApply.h"
 #include <algorithm>
+#include <vector>
 #include <unordered_map>
 
 #ifdef ENGINE_LOGGING
@@ -319,10 +320,41 @@ int search(Board &board,
 
   // Hash move ordering: search TT move first if present.
   auto captureScore = [&](const Move &m) -> int {
-    int victim = heuristic_piece_value(m.captured());
-    int attackerPiece = board.squares[SQ64_to_0x88(m.from())];
-    int attacker = heuristic_piece_value(type_of(attackerPiece));
-    return victim * 10 - attacker; // MVV-LVA scaled to integers
+    int victimVal = 0;
+    if (m.flags() & MF_EN_PASSANT_CAPTURE)
+    {
+      int to88 = SQ64_to_0x88(m.to());
+      int epSq = (sideToMove == WHITE) ? (to88 - 16) : (to88 + 16); // captured pawn is one rank behind target
+      if (!(epSq & 0x88))
+      {
+        int victimPiece = board.squares[epSq];
+        victimVal = heuristic_piece_value(type_of(victimPiece));
+      }
+    }
+    else
+    {
+      victimVal = heuristic_piece_value(m.captured());
+    }
+
+    int attackerVal = 0;
+    if (m.isPromotion() && m.isCapture())
+    {
+      attackerVal = heuristic_piece_value(m.promotion());
+    }
+    else
+    {
+      int from88 = SQ64_to_0x88(m.from());
+      if (!(from88 & 0x88))
+      {
+        int attackerPiece = board.squares[from88];
+        if (attackerPiece != EMPTY && color_of(attackerPiece) == sideToMove)
+        {
+          attackerVal = heuristic_piece_value(type_of(attackerPiece));
+        }
+      }
+    }
+
+    return victimVal * 10 - attackerVal; // MVV-LVA scaled to integers
   };
 
   int sortStart = 0;
@@ -338,28 +370,62 @@ int search(Board &board,
       }
     }
   }
-  std::stable_sort(moves.moves + sortStart, moves.moves + moves.count, [&](const Move &a, const Move &b) {
-    const bool ac = a.isCapture();
-    const bool bc = b.isCapture();
-    if (ac != bc) return ac; // captures before quiets
-
-    if (ac)
+  struct OrderKey
+  {
+    bool isCapture = false;
+    int capScore = 0;
+    int attackerVal = 0;
+    int quietPenaltyVal = 0;
+  };
+  std::vector<OrderKey> keys(moves.count);
+  for (int i = 0; i < moves.count; ++i)
+  {
+    const Move &m = moves.moves[i];
+    OrderKey k{};
+    k.isCapture = m.isCapture();
+    if (k.isCapture)
     {
-      int scoreA = captureScore(a);
-      int scoreB = captureScore(b);
-      if (scoreA != scoreB) return scoreA > scoreB; // MVV-LVA desc
+      k.capScore = captureScore(m);
+      if (m.isPromotion())
+      {
+        k.attackerVal = heuristic_piece_value(m.promotion());
+      }
+      else
+      {
+        int from88 = SQ64_to_0x88(m.from());
+        if (!(from88 & 0x88))
+        {
+          int attackerPiece = board.squares[from88];
+          if (attackerPiece != EMPTY && color_of(attackerPiece) == sideToMove)
+          {
+            k.attackerVal = heuristic_piece_value(type_of(attackerPiece));
+          }
+        }
+      }
+    }
+    else
+    {
+      k.quietPenaltyVal = quietPenalty(m);
+    }
+    keys[i] = k;
+  }
 
-      // Secondary key: prefer lighter attacker if scores tie.
-      int attackerA = heuristic_piece_value(type_of(board.squares[SQ64_to_0x88(a.from())]));
-      int attackerB = heuristic_piece_value(type_of(board.squares[SQ64_to_0x88(b.from())]));
-      if (attackerA != attackerB) return attackerA < attackerB;
-      return false; // keep stable order otherwise
+  Move *base = moves.moves;
+  std::stable_sort(moves.moves + sortStart, moves.moves + moves.count, [&](const Move &a, const Move &b) {
+    const OrderKey &ka = keys[&a - base];
+    const OrderKey &kb = keys[&b - base];
+
+    if (ka.isCapture != kb.isCapture) return ka.isCapture; // captures before quiets
+
+    if (ka.isCapture)
+    {
+      if (ka.capScore != kb.capScore) return ka.capScore > kb.capScore; // higher MVV-LVA first
+      if (ka.attackerVal != kb.attackerVal) return ka.attackerVal < kb.attackerVal; // lighter attacker wins tie
+      return false;
     }
 
-    int pa = quietPenalty(a);
-    int pb = quietPenalty(b);
-    if (pa != pb) return pa < pb;
-    return false; // keep original order for quiets otherwise
+    if (ka.quietPenaltyVal != kb.quietPenaltyVal) return ka.quietPenaltyVal < kb.quietPenaltyVal;
+    return false; // keep stable order otherwise
   });
 
   for (int i = 0; i < moves.count; ++i)

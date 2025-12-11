@@ -90,6 +90,7 @@ See LICENSE file for details.
 #include <cstdint>
 #include <string>
 #include <iosfwd>
+#include <cassert>
 
 #include "../board/board.h"
 
@@ -188,6 +189,13 @@ private:
       PieceType promo,
       PieceType captured)
   {
+    // Debug-time validation to avoid silent truncation
+    assert((fromSq & ~static_cast<int>(FROM_MASK)) == 0);
+    assert((toSq & ~static_cast<int>(FROM_MASK)) == 0);
+    assert((static_cast<int>(flags) & ~static_cast<int>(FLAGS_FIELD_MASK)) == 0);
+    assert((static_cast<int>(promo) & ~0xF) == 0);
+    assert((static_cast<int>(captured) & ~0xF) == 0);
+
     return (static_cast<uint32_t>(fromSq) & FROM_MASK) | ((static_cast<uint32_t>(toSq) & FROM_MASK) << TO_SHIFT) | ((static_cast<uint32_t>(flags) & FLAGS_FIELD_MASK) << FLAGS_SHIFT) | ((static_cast<uint32_t>(promo) & 0xF) << PROMO_SHIFT) | ((static_cast<uint32_t>(captured) & 0xF) << CAPT_SHIFT);
   }
 };
