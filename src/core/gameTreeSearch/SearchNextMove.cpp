@@ -164,14 +164,16 @@ static inline uint64_t pawn_attackers_to(int sq, Side side)
   uint64_t bb = 1ULL << sq;
   if (side == WHITE)
   {
-    uint64_t west = (bb >> 9) & ~FILE_H;
-    uint64_t east = (bb >> 7) & ~FILE_A;
+    // White pawn attackers are on sq-7 (east) and sq-9 (west); mask wraparound
+    uint64_t east = (bb >> 7) & ~FILE_H;
+    uint64_t west = (bb >> 9) & ~FILE_A;
     return west | east;
   }
   else
   {
-    uint64_t west = (bb << 7) & ~FILE_H;
-    uint64_t east = (bb << 9) & ~FILE_A;
+    // Black pawn attackers are on sq+7 (west) and sq+9 (east); mask wraparound
+    uint64_t west = (bb << 7) & ~FILE_A;
+    uint64_t east = (bb << 9) & ~FILE_H;
     return west | east;
   }
 }
@@ -245,7 +247,6 @@ int static_exchange_eval(const Board &board, const Move &m)
   int targetPiece = movingOnTarget;
 
   auto attackers_of_side = [&](Side s, uint64_t occBB, uint64_t pieces[]) -> uint64_t {
-    uint64_t attackers = 0ULL;
     uint64_t pawns = pieces[(static_cast<int>(s) << 3) | PAWN];
     uint64_t knights = pieces[(static_cast<int>(s) << 3) | KNIGHT];
     uint64_t bishops = pieces[(static_cast<int>(s) << 3) | BISHOP];
@@ -254,16 +255,39 @@ int static_exchange_eval(const Board &board, const Move &m)
     uint64_t kings = pieces[(static_cast<int>(s) << 3) | KING];
 
     uint64_t bbTarget = 1ULL << targetSq64;
-    attackers |= pawn_attackers_to(targetSq64, s) & pawns;
-    attackers |= knightAttacks[targetSq64] & knights;
+    uint64_t raw = 0ULL;
+    raw |= pawn_attackers_to(targetSq64, s) & pawns;
+    raw |= knightAttacks[targetSq64] & knights;
     uint64_t bishopRay = bishopAttacks(targetSq64, occBB);
-    attackers |= bishopRay & (bishops | queens);
+    raw |= bishopRay & (bishops | queens);
     uint64_t rookRay = rookAttacks(targetSq64, occBB);
-    attackers |= rookRay & (rooks | queens);
-    attackers |= kingAttacks[targetSq64] & kings;
-    // Remove any phantom self-occupancy (the piece currently on the target square)
-    attackers &= ~bbTarget;
-    return attackers;
+    raw |= rookRay & (rooks | queens);
+    raw |= kingAttacks[targetSq64] & kings;
+    raw &= ~bbTarget; // exclude piece currently on target
+
+    // Filter out pinned attackers (removing fromSq while keeping target occupied must not expose own king).
+    if (kings == 0) return raw; // no king info; skip filter
+    int kingSq = __builtin_ctzll(kings);
+    uint64_t oppBish = pieces[((static_cast<int>(s) ^ 1) << 3) | BISHOP] | pieces[((static_cast<int>(s) ^ 1) << 3) | QUEEN];
+    uint64_t oppRook = pieces[((static_cast<int>(s) ^ 1) << 3) | ROOK] | pieces[((static_cast<int>(s) ^ 1) << 3) | QUEEN];
+
+    uint64_t filtered = 0ULL;
+    uint64_t tmp = raw;
+    while (tmp)
+    {
+      uint64_t lsb = tmp & -tmp;
+      int fromSq = __builtin_ctzll(lsb);
+      tmp ^= lsb;
+
+      uint64_t occTest = occBB & ~(1ULL << fromSq); // remove attacker; target stays occupied
+      bool kingDiag = (bishopAttacks(kingSq, occTest) & oppBish) != 0ULL;
+      bool kingOrth = (rookAttacks(kingSq, occTest) & oppRook) != 0ULL;
+      if (!(kingDiag || kingOrth))
+      {
+        filtered |= lsb;
+      }
+    }
+    return filtered;
   };
 
   while (true)
@@ -310,7 +334,7 @@ int static_exchange_eval(const Board &board, const Move &m)
     if (depth >= static_cast<int>(sizeof(gains) / sizeof(gains[0])))
       break; // safety guard
 
-    gains[depth] = heuristic_piece_value(static_cast<PieceType>(type_of(attackerPiece))) - gains[depth - 1];
+    gains[depth] = heuristic_piece_value(static_cast<PieceType>(type_of(targetPiece))) - gains[depth - 1];
 
     // Capture: remove current target piece, move attacker onto target
     clear_bit(bb[targetPiece], targetSq64);
