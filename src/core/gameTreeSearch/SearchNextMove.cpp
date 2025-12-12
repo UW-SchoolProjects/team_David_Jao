@@ -885,7 +885,6 @@ int search(Board &board,
     const Side oppSide = (nextSide == WHITE ? BLACK : WHITE);
     const bool givesCheck = isInCheck(board, oppSide);
 
-    bool applyLMR = false;
     int reduction = 0;
     if (!isPVNode &&
         !inCheckParent &&
@@ -904,7 +903,6 @@ int search(Board &board,
       int reducedDepth = searchDepthChild - reduction;
       if (reducedDepth < 1) reducedDepth = 1;
 
-      applyLMR = true;
       score = -search(board, reducedDepth, -beta, -alpha, ply + 1, evalFn, nextChainLen, usedExtensions, /*isNullSearch=*/false);
       if (score > alpha)
       {
