@@ -636,6 +636,7 @@ int search(Board &board,
 
   if (!isNullSearch &&
       !inCheck &&
+      ply > 0 &&
       !hasActiveEP &&
       has_enough_material_for_null(board, sideToMove) &&
       !is_potential_zugzwang(board))
@@ -647,25 +648,25 @@ int search(Board &board,
       // Require enough remaining depth after reduction to keep cutoff stable.
       if (effectiveDepth >= nullReduction + 2)
       {
-        int staticEval = evalFn(board);
-        if (staticEval > 50 && staticEval >= beta)
+      int staticEval = evalFn(board);
+      if (staticEval >= beta)
+      {
+        NullUndo nu;
+        if (make_null(board, nu))
         {
-          NullUndo nu;
-          if (make_null(board, nu))
-          {
-            int nullDepth = effectiveDepth - 1 - nullReduction;
+          int nullDepth = effectiveDepth - 1 - nullReduction;
             int nullScore = -search(board, nullDepth, -beta, -beta + 1, ply + 1, evalFn, /*captureChainLen=*/0, usedExtensions, /*isNullSearch=*/true);
             unmake_null(board, nu);
 
-            if (nullScore >= beta)
-            {
-              // Store safe lower bound and return beta to avoid polluting TT with reduced-depth score.
-              TT.store(key, effectiveDepth, beta, TTFlag::LOWERBOUND, Move(), ply);
-              return beta;
-            }
+          if (nullScore >= beta)
+          {
+            // Store safe lower bound and return beta to avoid polluting TT with reduced-depth score.
+            TT.store(key, nullDepth, beta, TTFlag::LOWERBOUND, Move(), ply);
+            return beta;
           }
         }
       }
+    }
     }
   }
 
