@@ -1022,8 +1022,11 @@ static inline bool time_expired() {
   auto now = std::chrono::steady_clock::now();
   auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_search_start).count();
   const long long soft_base = std::max(0, g_time_budget->soft_ms);
-  const long long hard_base = std::max(0, g_time_budget->hard_ms);
+  long long hard_base = std::max(0, g_time_budget->hard_ms);
   const long long soft_limit = soft_base + std::max(0, g_soft_overrun_ms);
+  if (hard_base < soft_limit) {
+    hard_base = soft_limit;
+  }
   const long long hard_limit = hard_base;
   if (elapsed_ms >= hard_limit) {
     g_time_abort = true;    // hard stop: abort immediately
@@ -1138,6 +1141,7 @@ Move getBestMove(Board &board, int maxDepth, EvalFn evalFn, const TimeBudget *ti
   if (!havePV && !lastCompletedPVMove.isNull()) {
     bestMove = lastCompletedPVMove;
     bestScore = lastCompletedPVScore;
+    havePV = true;
   }
 
   if (!havePV)
