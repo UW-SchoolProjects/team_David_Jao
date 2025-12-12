@@ -848,6 +848,7 @@ int search(Board &board,
         nextChainLen == 0 &&     // do not reduce after capture sequences
         searchDepthChild >= 2 && // parent depth >=3
         i >= 3 &&                // 4th move or later (0-based)
+        i < (moves.count - 1) && // avoid reducing a possibly forced last move
         !m.isCapture() &&
         !m.isPromotion() &&
         !givesCheck)
@@ -873,7 +874,11 @@ int search(Board &board,
 
     unmake_move(board);
 
-    int penalty = quietPenalty(m);
+    int penalty = 0;
+    if (!m.isCapture() && !m.isPromotion())
+    {
+      penalty = quietPenalty(m);
+    }
     int scoreCmp = (ply == 0 ? score - penalty : score);
 
     if (scoreCmp > bestScore)
