@@ -93,6 +93,7 @@ See LICENSE file for details.
 #include <cstdlib>
 #include <cstdio>
 #include <cctype>
+#include <limits>
 
 #include "../core/nextMoveGeneration/MoveGenerator.h"   // MoveList, validMoveGeneration
 #include "../core/nextMoveGeneration/MoveApply.h"       // make_move, unmake_move
@@ -146,20 +147,29 @@ static inline int cs_to_ms(int cs) {
 static int parse_time_token_ms(const std::string &tok) {
     // CECP 'level' time token is minutes or minutes:seconds.
     size_t colon = tok.find(':');
-    int minutes = 0;
-    int seconds = 0;
+    long long minutes = 0;
+    long long seconds = 0;
     try {
         if (colon == std::string::npos) {
-            minutes = std::stoi(tok);
+            minutes = std::stoll(tok);
         } else {
-            minutes = std::stoi(tok.substr(0, colon));
-            seconds = std::stoi(tok.substr(colon + 1));
+            minutes = std::stoll(tok.substr(0, colon));
+            seconds = std::stoll(tok.substr(colon + 1));
         }
     } catch (const std::exception &) {
         log_msg("Error: Invalid time token format: " + tok);
         return 0;
     }
-    return (minutes * 60 + seconds) * 1000;
+    if (minutes < 0 || seconds < 0 || seconds >= 60) {
+        log_msg("Error: Out-of-range time token: " + tok);
+        return 0;
+    }
+    long long total_ms = (minutes * 60LL + seconds) * 1000LL;
+    if (total_ms > std::numeric_limits<int>::max()) {
+        log_msg("Error: Time token too large (overflow): " + tok);
+        return 0;
+    }
+    return static_cast<int>(total_ms);
 }
 
 static int clamp_non_negative(long long v) {
@@ -168,11 +178,17 @@ static int clamp_non_negative(long long v) {
 
 void apply_my_move_elapsed(EngineSession &sess, int elapsed_ms, std::chrono::steady_clock::time_point now_ts) {
     int used = clamp_non_negative(elapsed_ms);
-    if (sess.my_time_ms > 0) {
+    int before = sess.my_time_ms;
+    if (before > 0) {
         sess.my_time_ms = std::max(0, sess.my_time_ms - used);
     }
-    if (sess.increment_ms > 0) {
-        sess.my_time_ms += sess.increment_ms;
+    if (sess.increment_ms > 0 && before > 0) {
+        long long sum = static_cast<long long>(sess.my_time_ms) + static_cast<long long>(sess.increment_ms);
+        if (sum > std::numeric_limits<int>::max()) {
+            sess.my_time_ms = std::numeric_limits<int>::max();
+        } else {
+            sess.my_time_ms = static_cast<int>(sum);
+        }
     }
     sess.last_my_move_ts = now_ts;
     sess.last_opp_move_ts = now_ts; // opponent clock starts now
@@ -436,8 +452,17 @@ static void handle_sd(EngineSession &sess, int depth) {
 }
 
 static void handle_result(EngineSession &sess, const std::string&) {
-    // Game ended; engine goes back to force mode.
+    // Game ended; engine goes back to force mode and reset timing state.
     sess.mode = EngineMode::FORCE;
+    sess.my_time_ms = 0;
+    sess.opp_time_ms = 0;
+    sess.moves_per_session = 0;
+    sess.base_time_ms = 0;
+    sess.increment_ms = 0;
+    sess.time_per_move_ms = 0;
+    auto now = std::chrono::steady_clock::now();
+    sess.last_my_move_ts = now;
+    sess.last_opp_move_ts = now;
 }
 
 static void handle_quit(EngineSession &sess) {
@@ -453,6 +478,7 @@ static void handle_setboard(EngineSession &sess, const std::string &fen) {
     TT.clear();
     sess.side_to_move = sess.board.side;
     sess.mode = EngineMode::FORCE;
+    sess.engine_side = sess.side_to_move;
     sess.my_time_ms       = 0;
     sess.opp_time_ms      = 0;
     sess.moves_per_session = 0;
