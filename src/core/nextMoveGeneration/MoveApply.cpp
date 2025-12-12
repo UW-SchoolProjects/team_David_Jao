@@ -229,11 +229,11 @@ bool make_move(Board &b, const Move &m) {
             int rook_piece  = WROOK;
 
             b.squares[rook_to]   = rook_piece;
-            b.squares[rook_from] = EMPTY;
+        b.squares[rook_from] = EMPTY;
 
-            // NEW: bitboard
-            bb_clear_piece(b, rook_from64, rook_piece);
-            bb_set_piece  (b, rook_to64,   rook_piece);
+        // NEW: bitboard
+        bb_clear_piece(b, rook_from64, rook_piece);
+        bb_set_piece  (b, rook_to64,   rook_piece);
 
             zobrist_update_castling_move(b, WCK);
         } else {
@@ -284,7 +284,8 @@ bool make_move(Board &b, const Move &m) {
             bb_set_piece  (b, rook_to64,   rook_piece);
 
             zobrist_update_castling_move(b, BCQ);
-}
+        }
+    }
 
     // --- 6) Move the piece on the board + bitboards ---
 
