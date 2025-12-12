@@ -640,24 +640,29 @@ int search(Board &board,
       has_enough_material_for_null(board, sideToMove) &&
       !is_potential_zugzwang(board))
   {
-    const int nullReduction = is_clear_endgame_for_null(board) ? 3 : 2;
-    if (effectiveDepth > nullReduction)
+    // Avoid null move when in mate-bound windows; preserve mate distance ordering.
+    if (beta < SCORE_MATE - 2 * MAX_PLY && beta > -SCORE_MATE + 2 * MAX_PLY)
     {
-      int staticEval = evalFn(board);
-      if (staticEval > 50 && staticEval >= beta)
+      const int nullReduction = is_clear_endgame_for_null(board) ? 3 : 2;
+      // Require enough remaining depth after reduction to keep cutoff stable.
+      if (effectiveDepth >= nullReduction + 2)
       {
-        NullUndo nu;
-        if (make_null(board, nu))
+        int staticEval = evalFn(board);
+        if (staticEval > 50 && staticEval >= beta)
         {
-          int nullDepth = effectiveDepth - 1 - nullReduction;
-          int nullScore = -search(board, nullDepth, -beta, -beta + 1, ply + 1, evalFn, /*captureChainLen=*/0, usedExtensions, /*isNullSearch=*/true);
-          unmake_null(board);
-
-          if (nullScore >= beta)
+          NullUndo nu;
+          if (make_null(board, nu))
           {
-            // Store safe lower bound and return beta to avoid polluting TT with reduced-depth score.
-            TT.store(key, effectiveDepth, beta, TTFlag::LOWERBOUND, Move(), ply);
-            return beta;
+            int nullDepth = effectiveDepth - 1 - nullReduction;
+            int nullScore = -search(board, nullDepth, -beta, -beta + 1, ply + 1, evalFn, /*captureChainLen=*/0, usedExtensions, /*isNullSearch=*/true);
+            unmake_null(board, nu);
+
+            if (nullScore >= beta)
+            {
+              // Store safe lower bound and return beta to avoid polluting TT with reduced-depth score.
+              TT.store(key, effectiveDepth, beta, TTFlag::LOWERBOUND, Move(), ply);
+              return beta;
+            }
           }
         }
       }
