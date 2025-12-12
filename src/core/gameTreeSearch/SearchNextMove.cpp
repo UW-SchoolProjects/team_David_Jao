@@ -675,6 +675,8 @@ int search(Board &board,
   int bestScore = -SCORE_INF;
   Move bestMove; // for PV / TT (not used directly by caller)
   bool didCutoff = false;
+  const bool isPVNode = (beta > alpha + 1);
+  const bool inCheckParent = isInCheck(board, sideToMove);
 
   // Hash move ordering: search TT move first if present.
   auto captureScore = [&](const Move &m) -> int {
@@ -830,13 +832,61 @@ int search(Board &board,
     if (!make_move(board, m))
       continue; // illegal move; skip
 
+    const Side nextSide = static_cast<Side>(board.side);
+    const Side oppSide = (nextSide == WHITE ? BLACK : WHITE);
+    const bool givesCheck = isInCheck(board, oppSide);
+
     // Negamax: flip perspective and bounds
     int nextChainLen = m.isCapture() ? (captureChainLen + 1) : 0;
-    int score = -search(board, effectiveDepth - 1, -beta, -alpha, ply + 1, evalFn, nextChainLen, usedExtensions, /*isNullSearch=*/false);
+    int searchDepthChild = effectiveDepth - 1;
+    int score = 0;
+
+    bool applyLMR = false;
+    int reduction = 0;
+    if (!isPVNode &&
+        !inCheckParent &&
+        moves.count > 1 &&
+        nextChainLen == 0 &&     // do not reduce after capture sequences
+        searchDepthChild >= 2 && // parent depth >=3
+        i >= 3 &&                // 4th move or later (0-based)
+        i < (moves.count - 1) && // avoid reducing a possibly forced last move
+        !m.isCapture() &&
+        !m.isPromotion() &&
+        !givesCheck)
+    {
+      reduction = 1;
+      if (i >= 6) reduction += 1;
+      if (effectiveDepth > 6) reduction += 1;
+      int reducedDepth = searchDepthChild - reduction;
+      if (reducedDepth < 1) reducedDepth = 1;
+
+      applyLMR = true;
+      score = -search(board, reducedDepth, -beta, -alpha, ply + 1, evalFn, nextChainLen, usedExtensions, /*isNullSearch=*/false);
+      if (score > alpha)
+      {
+        if (score >= beta)
+        {
+          // Reduced search already fails high; treat as cutoff.
+        }
+        else
+        {
+          // Re-search at full depth when reduced search improves alpha.
+          score = -search(board, searchDepthChild, -beta, -alpha, ply + 1, evalFn, nextChainLen, usedExtensions, /*isNullSearch=*/false);
+        }
+      }
+    }
+    else
+    {
+      score = -search(board, searchDepthChild, -beta, -alpha, ply + 1, evalFn, nextChainLen, usedExtensions, /*isNullSearch=*/false);
+    }
 
     unmake_move(board);
 
-    int penalty = quietPenalty(m);
+    int penalty = 0;
+    if (!m.isCapture() && !m.isPromotion())
+    {
+      penalty = quietPenalty(m);
+    }
     int scoreCmp = (ply == 0 ? score - penalty : score);
 
     if (scoreCmp > bestScore)
