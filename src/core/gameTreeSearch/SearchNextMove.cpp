@@ -214,7 +214,8 @@ static inline void decay_history()
 // -------------- Time control state --------------
 static const TimeBudget *g_time_budget = nullptr;
 static std::chrono::steady_clock::time_point g_search_start;
-static bool g_time_abort = false;
+static bool g_time_abort = false;       // hard timeout
+static bool g_time_soft_abort = false;  // soft timeout
 static uint64_t g_time_check_counter = 0;
 static int g_soft_overrun_ms = 0;
 
@@ -524,8 +525,8 @@ int search(Board &board,
   if (g_time_budget && time_check_due()) {
     bool hard_stop = time_expired();
     if (hard_stop) {
-      // On hard timeout, return neutral to avoid bound corruption.
-      return 0;
+      // On hard timeout, preserve bounds by returning current alpha.
+      return alpha;
     }
     if (g_time_abort) {
       // Soft timeout flagged: let callers unwind gracefully.
@@ -1021,11 +1022,11 @@ static inline bool time_expired() {
   const long long soft_limit = static_cast<long long>(g_time_budget->soft_ms) + g_soft_overrun_ms;
   const long long hard_limit = g_time_budget->hard_ms;
   if (elapsed_ms >= hard_limit) {
-    g_time_abort = true;  // hard stop: abort immediately
+    g_time_abort = true;    // hard stop: abort immediately
     return true;
   }
   if (elapsed_ms >= soft_limit) {
-    g_time_abort = true;  // soft stop: request graceful exit
+    g_time_soft_abort = true;  // soft stop: request graceful exit
     return false;
   }
   return false;
@@ -1049,6 +1050,7 @@ Move getBestMove(Board &board, int maxDepth, EvalFn evalFn, const TimeBudget *ti
   g_time_budget = timeBudget;
   g_search_start = std::chrono::steady_clock::now();
   g_time_abort = false;
+  g_time_soft_abort = false;
   g_time_check_counter = 0;
   g_soft_overrun_ms = 0;
 
@@ -1119,6 +1121,10 @@ Move getBestMove(Board &board, int maxDepth, EvalFn evalFn, const TimeBudget *ti
 
     // Decay history each completed iteration to keep recency bias
     decay_history();
+
+    if (g_time_abort || g_time_soft_abort) {
+      break;
+    }
   }
 
   if (outRootScore) {

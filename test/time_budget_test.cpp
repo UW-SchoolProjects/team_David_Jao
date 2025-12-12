@@ -13,13 +13,14 @@ int main() {
     assert(b1.hard_ms == 21000);
 
     // In check should increase soft cap but stay under hard cap.
-    TimeBudget b2 = compute_time_budget(60000, 0, 0, 30, false, true);
+    TimeBudget b2 = compute_time_budget(60000, 0, 0, 30, true, false);
     assert(b2.soft_ms > b1.soft_ms);
     assert(b2.soft_ms <= b2.hard_ms);
 
-    // Capture heavy and unstable should also bump soft.
+    // Capture heavy should also bump soft.
     TimeBudget b3 = compute_time_budget(60000, 0, 0, 30, false, true);
     assert(b3.soft_ms > b1.soft_ms);
+    assert(b3.soft_ms <= b3.hard_ms);
 
     // Hard cap should limit runaway soft allocations.
     TimeBudget b4 = compute_time_budget(5000, 0, 0, 5, true, true);
