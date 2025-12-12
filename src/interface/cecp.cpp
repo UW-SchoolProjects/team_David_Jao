@@ -86,11 +86,14 @@ See LICENSE file for details.
 
 #include "cecp.h"
 
+#include <algorithm>
+#include <chrono>
 #include <iostream>
 #include <sstream>
 #include <cstdlib>
 #include <cstdio>
 #include <cctype>
+#include <limits>
 
 #include "../core/nextMoveGeneration/MoveGenerator.h"   // MoveList, validMoveGeneration
 #include "../core/nextMoveGeneration/MoveApply.h"       // make_move, unmake_move
@@ -135,6 +138,76 @@ static inline void sq64_to_file_rank(int sq64, char &fileChar, char &rankChar) {
     int rank = sq64 / 8;
     fileChar = char('a' + file);
     rankChar = char('1' + rank);
+}
+
+static inline int cs_to_ms(int cs) {
+    return cs * 10;
+}
+
+static int parse_time_token_ms(const std::string &tok) {
+    // CECP 'level' time token is minutes or minutes:seconds.
+    size_t colon = tok.find(':');
+    long long minutes = 0;
+    long long seconds = 0;
+    try {
+        if (colon == std::string::npos) {
+            minutes = std::stoll(tok);
+        } else {
+            minutes = std::stoll(tok.substr(0, colon));
+            seconds = std::stoll(tok.substr(colon + 1));
+        }
+    } catch (const std::exception &) {
+        log_msg("Error: Invalid time token format: " + tok);
+        return 0;
+    }
+    if (minutes < 0 || seconds < 0 || seconds >= 60) {
+        log_msg("Error: Out-of-range time token: " + tok);
+        return 0;
+    }
+    // Pre-check to avoid overflow in intermediate calculations
+    const long long max_ms = static_cast<long long>(std::numeric_limits<int>::max());
+    if (minutes > (max_ms / 1000LL - seconds) / 60LL) {
+        log_msg("Error: Time token too large (overflow): " + tok);
+        return 0;
+    }
+    long long total_secs = minutes * 60LL + seconds;
+    if (total_secs > max_ms / 1000LL) {
+        log_msg("Error: Time token too large (overflow): " + tok);
+        return 0;
+    }
+    long long total_ms = total_secs * 1000LL;
+    return static_cast<int>(total_ms);
+}
+
+static int clamp_non_negative(long long v) {
+    return v <= 0 ? 0 : static_cast<int>(v);
+}
+
+void apply_my_move_elapsed(EngineSession &sess, int elapsed_ms, std::chrono::steady_clock::time_point now_ts) {
+    int used = clamp_non_negative(elapsed_ms);
+    int before = sess.my_time_ms;
+    if (before > 0) {
+        sess.my_time_ms = std::max(0, sess.my_time_ms - used);
+    }
+    // Only award increment if we still have time left after the move (no flag fall)
+    if (sess.increment_ms > 0 && sess.my_time_ms > 0) {
+        long long sum = static_cast<long long>(sess.my_time_ms) + static_cast<long long>(sess.increment_ms);
+        if (sum > std::numeric_limits<int>::max()) {
+            sess.my_time_ms = std::numeric_limits<int>::max();
+        } else {
+            sess.my_time_ms = static_cast<int>(sum);
+        }
+    }
+    sess.last_my_move_ts = now_ts;
+    sess.last_opp_move_ts = now_ts; // opponent clock starts now
+}
+
+void apply_opp_move_elapsed(EngineSession &sess, int elapsed_ms, std::chrono::steady_clock::time_point now_ts) {
+    int used = clamp_non_negative(elapsed_ms);
+    if (sess.opp_time_ms > 0) {
+        sess.opp_time_ms = std::max(0, sess.opp_time_ms - used);
+    }
+    sess.last_opp_move_ts = now_ts;
 }
 
 // ---------------------------
@@ -198,8 +271,8 @@ bool parse_uci_move(Board &b,
 
 static Move search_best_move(EngineSession &sess) {
     // Use the engine's negamax search with quiescence and basic eval.
-    // Depth can be tuned; keep modest for responsiveness.
-    constexpr int searchDepth = 8;
+    // Depth can be tuned; 'sd' overrides the default when provided.
+    int searchDepth = sess.max_depth > 0 ? sess.max_depth : 8;
     log_msg("search_best_move: starting search depth " + std::to_string(searchDepth));
     Move best = getBestMove(sess.board, searchDepth, basicEvaluate);
     log_msg("search_best_move: search finished");
@@ -222,11 +295,18 @@ void init_engine_session(EngineSession &sess) {
     sess.board.side   = WHITE;
     sess.engine_side  = WHITE;
 
-    sess.mode           = EngineMode::FORCE;
-    sess.quit_requested = false;
-    sess.my_time_cs     = 0;
-    sess.opp_time_cs    = 0;
-    sess.last_ping_id   = 0;
+    sess.mode             = EngineMode::FORCE;
+    sess.quit_requested   = false;
+    sess.my_time_ms       = 0;
+    sess.opp_time_ms      = 0;
+    sess.moves_per_session = 0;
+    sess.base_time_ms      = 0;
+    sess.increment_ms      = 0;
+    sess.time_per_move_ms  = 0;
+    sess.max_depth         = 0;
+    sess.last_my_move_ts   = std::chrono::steady_clock::now();
+    sess.last_opp_move_ts  = std::chrono::steady_clock::now();
+    sess.last_ping_id      = 0;
 }
 
 // ---------------------------
@@ -274,6 +354,8 @@ static void handle_black(EngineSession &sess) {
 
 static void do_engine_move(EngineSession &sess) {
     log_msg("do_engine_move entry");
+    auto move_start_ts = std::chrono::steady_clock::now();
+
     Move best = search_best_move(sess);
 
     if (best.isNull()) {
@@ -299,6 +381,10 @@ static void do_engine_move(EngineSession &sess) {
   sess.side_to_move = sess.board.side;
   log_msg("Engine plays " + s);
   log_board_fen(sess.board, "After engine move");
+
+  auto move_end_ts = std::chrono::steady_clock::now();
+  auto elapsed_ms_ll = std::chrono::duration_cast<std::chrono::milliseconds>(move_end_ts - move_start_ts).count();
+  apply_my_move_elapsed(sess, static_cast<int>(elapsed_ms_ll), move_end_ts);
 
   // Use std::endl to force an immediate flush to the GUI.
   std::cout << "move " << s << std::endl;
@@ -330,6 +416,8 @@ static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
 
     sess.side_to_move = sess.board.side;
     log_board_fen(sess.board, "After usermove");
+    // Opponent just moved; record their move end (our clock starts now).
+    sess.last_opp_move_ts = std::chrono::steady_clock::now();
 
     log_msg(sess.mode == EngineMode::PLAYING ? "play is on" : "play not on");
     if (sess.mode == EngineMode::PLAYING && sess.board.side == sess.engine_side) {
@@ -337,12 +425,14 @@ static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
     }
 }
 
-static void handle_time(EngineSession &sess, int cs) {
-    sess.my_time_cs = cs;
+void handle_time(EngineSession &sess, int cs) {
+    sess.my_time_ms = cs_to_ms(cs);
+    // CECP time is authoritative clock sync, not a move boundary.
 }
 
-static void handle_otim(EngineSession &sess, int cs) {
-    sess.opp_time_cs = cs;
+void handle_otim(EngineSession &sess, int cs) {
+    sess.opp_time_ms = cs_to_ms(cs);
+    // CECP otim is authoritative clock sync, not a move boundary.
 }
 
 static void handle_ping(EngineSession &sess, int id) {
@@ -350,9 +440,39 @@ static void handle_ping(EngineSession &sess, int id) {
     std::cout << "pong " << id << "\n";
 }
 
+static void handle_level(EngineSession &sess,
+                         int moves_per_session,
+                         const std::string &base_time_token,
+                         int increment_seconds)
+{
+    if (moves_per_session < 0) moves_per_session = 0;
+    if (increment_seconds < 0) increment_seconds = 0;
+    sess.moves_per_session = moves_per_session;
+    sess.base_time_ms      = std::max(0, parse_time_token_ms(base_time_token));
+    sess.increment_ms      = increment_seconds * 1000;
+}
+
+static void handle_st(EngineSession &sess, int seconds) {
+    sess.time_per_move_ms = seconds * 1000;
+}
+
+static void handle_sd(EngineSession &sess, int depth) {
+    sess.max_depth = depth;
+}
+
 static void handle_result(EngineSession &sess, const std::string&) {
-    // Game ended; engine goes back to force mode.
+    // Game ended; engine goes back to force mode and reset timing state.
     sess.mode = EngineMode::FORCE;
+    sess.my_time_ms = 0;
+    sess.opp_time_ms = 0;
+    sess.moves_per_session = 0;
+    sess.base_time_ms = 0;
+    sess.increment_ms = 0;
+    sess.time_per_move_ms = 0;
+    sess.max_depth = 0;
+    auto now = std::chrono::steady_clock::now();
+    sess.last_my_move_ts = now;
+    sess.last_opp_move_ts = now;
 }
 
 static void handle_quit(EngineSession &sess) {
@@ -368,6 +488,16 @@ static void handle_setboard(EngineSession &sess, const std::string &fen) {
     TT.clear();
     sess.side_to_move = sess.board.side;
     sess.mode = EngineMode::FORCE;
+    sess.my_time_ms       = 0;
+    sess.opp_time_ms      = 0;
+    sess.moves_per_session = 0;
+    sess.base_time_ms      = 0;
+    sess.increment_ms      = 0;
+    sess.time_per_move_ms  = 0;
+    sess.max_depth         = 0;
+    auto now = std::chrono::steady_clock::now();
+    sess.last_my_move_ts   = now;
+    sess.last_opp_move_ts  = now;
 }
 
 // ---------------------------
@@ -424,6 +554,26 @@ void cecp_main_loop(EngineSession &sess) {
         else if (cmd == "otim") {
             int t; iss >> t;
             handle_otim(sess, t);
+        }
+        else if (cmd == "level") {
+            int moves = 0;
+            std::string baseTimeToken;
+            int increment = 0;
+            iss >> moves >> baseTimeToken;
+            if (!(iss >> increment)) {
+                increment = 0;
+            }
+            if (!baseTimeToken.empty()) {
+                handle_level(sess, moves, baseTimeToken, increment);
+            }
+        }
+        else if (cmd == "st") {
+            int seconds = 0; iss >> seconds;
+            handle_st(sess, seconds);
+        }
+        else if (cmd == "sd") {
+            int depth = 0; iss >> depth;
+            handle_sd(sess, depth);
         }
         else if (cmd == "ping") {
             int id; iss >> id;

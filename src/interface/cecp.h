@@ -89,6 +89,7 @@ See LICENSE file for details.
 
 #pragma once
 
+#include <chrono>
 #include <string>
 
 #include "../core/board/board.h"
@@ -113,9 +114,20 @@ struct EngineSession {
 
     bool quit_requested = false;
 
-    // clocks in centiseconds (CECP uses centiseconds)
-    int my_time_cs  = 0;       // time left on our clock
-    int opp_time_cs = 0;       // time left on opponent clock
+    // clocks in milliseconds (converted from CECP centiseconds)
+    int my_time_ms   = 0;      // time left on our clock
+    int opp_time_ms  = 0;      // time left on opponent clock
+
+    // time control parameters
+    int moves_per_session = 0; // 0 => sudden death / no moves-per-period limit
+    int base_time_ms      = 0; // base time for the current period
+    int increment_ms      = 0; // increment added after each move
+    int time_per_move_ms  = 0; // from 'st' (fixed seconds per move), 0 if unused
+    int max_depth         = 0; // from 'sd', 0 if unlimited
+
+    // last move timestamps for both sides
+    std::chrono::steady_clock::time_point last_my_move_ts;
+    std::chrono::steady_clock::time_point last_opp_move_ts;
 
     int last_ping_id = 0;
 };
@@ -125,6 +137,12 @@ void init_engine_session(EngineSession &sess);
 
 // Run the CECP main loop on stdin/stdout.
 void cecp_main_loop(EngineSession &sess);
+
+// Exposed for testing / simulation of clock handling.
+void handle_time(EngineSession &sess, int cs);
+void handle_otim(EngineSession &sess, int cs);
+void apply_my_move_elapsed(EngineSession &sess, int elapsed_ms, std::chrono::steady_clock::time_point now_ts);
+void apply_opp_move_elapsed(EngineSession &sess, int elapsed_ms, std::chrono::steady_clock::time_point now_ts);
 
 // Convert an internal Move to coord-style string like "e2e4",
 // "e7e8q" (promotion), "e1g1" (castling).
