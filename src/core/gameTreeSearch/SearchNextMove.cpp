@@ -844,6 +844,8 @@ int search(Board &board,
     int reduction = 0;
     if (!isPVNode &&
         !inCheckParent &&
+        moves.count > 1 &&
+        nextChainLen == 0 &&     // do not reduce after capture sequences
         searchDepthChild >= 2 && // parent depth >=3
         i >= 3 &&                // 4th move or later (0-based)
         !m.isCapture() &&
