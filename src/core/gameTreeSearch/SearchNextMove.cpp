@@ -229,10 +229,13 @@ static inline int count_side_nonking(const Board &b, Side s)
 
 static inline bool has_enough_material_for_null(const Board &b, Side s)
 {
-  int pawns = count_side_pawns(b, s);
-  int nonKing = count_side_nonking(b, s);
-  // Require at least one pawn or at least two total non-king pieces.
-  return pawns > 0 || nonKing >= 2;
+  int idxBase = static_cast<int>(s) << 3;
+  int pawns   = popcount(bb_of(b, idxBase | PAWN));
+  int rooks   = popcount(bb_of(b, idxBase | ROOK));
+  int queens  = popcount(bb_of(b, idxBase | QUEEN));
+  int minors  = popcount(bb_of(b, idxBase | KNIGHT)) + popcount(bb_of(b, idxBase | BISHOP));
+  // Allow null only with a pawn, any heavy piece, or at least three minors.
+  return pawns > 0 || rooks > 0 || queens > 0 || minors >= 3;
 }
 
 static inline bool is_clear_endgame_for_null(const Board &b)
@@ -503,7 +506,8 @@ int search(Board &board,
            int ply,
            EvalFn evalFn,
            int captureChainLen,
-           int extensionsUsed)
+           int extensionsUsed,
+           bool isNullSearch)
 {
 // #ifdef ENGINE_LOGGING
 //   log_msg("search start depth=" + std::to_string(depth) +
@@ -618,33 +622,42 @@ int search(Board &board,
   }
 
   // --- Null-move pruning ---
-  // Skip in check, in thin material, or when depth too low.
-  if (!inCheck && has_enough_material_for_null(board, sideToMove))
+  // Skip in check, after a null search, with active EP, or in thin/zugzwang material.
+  auto is_potential_zugzwang = [&](const Board &bIn) {
+    int totalPawns  = popcount(bb_of(bIn, WPAWN)) + popcount(bb_of(bIn, BPAWN));
+    int totalQueens = popcount(bb_of(bIn, WQUEEN)) + popcount(bb_of(bIn, BQUEEN));
+    int totalRooks  = popcount(bb_of(bIn, WROOK))  + popcount(bb_of(bIn, BROOK));
+    int totalMinors = popcount(bb_of(bIn, WKNIGHT)) + popcount(bb_of(bIn, WBISHOP)) +
+                      popcount(bb_of(bIn, BKNIGHT)) + popcount(bb_of(bIn, BBISHOP));
+    return (totalPawns == 0 && totalQueens == 0 && totalRooks == 0 && totalMinors <= 2);
+  };
+
+  const bool hasActiveEP = (board.ep_square != NO_SQUARE);
+
+  if (!isNullSearch &&
+      !inCheck &&
+      !hasActiveEP &&
+      has_enough_material_for_null(board, sideToMove) &&
+      !is_potential_zugzwang(board))
   {
     const int nullReduction = is_clear_endgame_for_null(board) ? 3 : 2;
     if (effectiveDepth > nullReduction)
     {
-      int staticEval = 0;
-      bool haveStaticEval = false;
-
-      if (!haveStaticEval)
-      {
-        staticEval = evalFn(board);
-        haveStaticEval = true;
-      }
+      int staticEval = evalFn(board);
       if (staticEval > 50 && staticEval >= beta)
       {
         NullUndo nu;
         if (make_null(board, nu))
         {
           int nullDepth = effectiveDepth - 1 - nullReduction;
-          int nullScore = -search(board, nullDepth, -beta, -beta + 1, ply + 1, evalFn, /*captureChainLen=*/0, usedExtensions);
+          int nullScore = -search(board, nullDepth, -beta, -beta + 1, ply + 1, evalFn, /*captureChainLen=*/0, usedExtensions, /*isNullSearch=*/true);
           unmake_null(board);
 
           if (nullScore >= beta)
           {
-            TT.store(key, effectiveDepth, nullScore, TTFlag::LOWERBOUND, Move(), ply);
-            return nullScore;
+            // Store safe lower bound and return beta to avoid polluting TT with reduced-depth score.
+            TT.store(key, effectiveDepth, beta, TTFlag::LOWERBOUND, Move(), ply);
+            return beta;
           }
         }
       }
@@ -811,7 +824,7 @@ int search(Board &board,
 
     // Negamax: flip perspective and bounds
     int nextChainLen = m.isCapture() ? (captureChainLen + 1) : 0;
-    int score = -search(board, effectiveDepth - 1, -beta, -alpha, ply + 1, evalFn, nextChainLen, usedExtensions);
+    int score = -search(board, effectiveDepth - 1, -beta, -alpha, ply + 1, evalFn, nextChainLen, usedExtensions, /*isNullSearch=*/false);
 
     unmake_move(board);
 
@@ -895,7 +908,7 @@ Move getBestMove(Board &board, int maxDepth, EvalFn evalFn)
       // First iteration: full-window search.
       alpha = -SCORE_INF;
       beta = SCORE_INF;
-      score = search(board, depth, alpha, beta, /*ply=*/0, evalFn, /*captureChainLen=*/0, /*extensionsUsed=*/0);
+      score = search(board, depth, alpha, beta, /*ply=*/0, evalFn, /*captureChainLen=*/0, /*extensionsUsed=*/0, /*isNullSearch=*/false);
     }
     else
     {
@@ -903,14 +916,14 @@ Move getBestMove(Board &board, int maxDepth, EvalFn evalFn)
       beta = bestScore + ASP_WINDOW;
 
       // First try with the narrow window
-      score = search(board, depth, alpha, beta, /*ply=*/0, evalFn, /*captureChainLen=*/0, /*extensionsUsed=*/0);
+      score = search(board, depth, alpha, beta, /*ply=*/0, evalFn, /*captureChainLen=*/0, /*extensionsUsed=*/0, /*isNullSearch=*/false);
 
       // If we fail low or high, re-search with full window
       if (score <= alpha || score >= beta)
       {
         alpha = -SCORE_INF;
         beta = SCORE_INF;
-        score = search(board, depth, alpha, beta, /*ply=*/0, evalFn, /*captureChainLen=*/0, /*extensionsUsed=*/0);
+      score = search(board, depth, alpha, beta, /*ply=*/0, evalFn, /*captureChainLen=*/0, /*extensionsUsed=*/0, /*isNullSearch=*/false);
       }
     }
 

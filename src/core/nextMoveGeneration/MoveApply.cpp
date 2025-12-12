@@ -296,7 +296,36 @@ bool make_null(Board &b, NullUndo &u) {
     u.old_side            = static_cast<Side>(b.side);
     u.old_zobrist_key     = b.zobrist_key;
 
-    // Null move: no piece displacement; clear EP, bump clocks, flip side.
+    auto ep_capturable = [&](int epSq, Side side) {
+        if (epSq == NO_SQUARE) return false;
+        int ep_rank = RANK_OF(epSq);
+        int ep_file = FILE_OF(epSq);
+        if (side == WHITE && ep_rank == 5) {
+            if (ep_file > 0) {
+                int sqL = MAKE_SQUARE(ep_file - 1, 4);
+                if (b.squares[sqL] == WPAWN) return true;
+            }
+            if (ep_file < 7) {
+                int sqR = MAKE_SQUARE(ep_file + 1, 4);
+                if (b.squares[sqR] == WPAWN) return true;
+            }
+        } else if (side == BLACK && ep_rank == 2) {
+            if (ep_file > 0) {
+                int sqL = MAKE_SQUARE(ep_file - 1, 3);
+                if (b.squares[sqL] == BPAWN) return true;
+            }
+            if (ep_file < 7) {
+                int sqR = MAKE_SQUARE(ep_file + 1, 3);
+                if (b.squares[sqR] == BPAWN) return true;
+            }
+        }
+        return false;
+    };
+
+    // Null move: remove EP hash if applicable, clear EP, bump clocks, flip side.
+    if (ep_capturable(b.ep_square, static_cast<Side>(b.side))) {
+        b.zobrist_key ^= Z_EP_FILE[FILE_OF(b.ep_square)];
+    }
     b.ep_square = NO_SQUARE;
     b.halfmove_clock += 1;
     if (b.side == BLACK) {
@@ -304,7 +333,6 @@ bool make_null(Board &b, NullUndo &u) {
     }
 
     Side newSide = (b.side == WHITE ? BLACK : WHITE);
-    zobrist_update_castling_rights_EP_file(b, u.old_castling, u.old_ep_square, u.old_side, newSide);
     b.zobrist_key ^= Z_SIDE;
     b.side = newSide;
 
@@ -312,6 +340,10 @@ bool make_null(Board &b, NullUndo &u) {
 }
 
 void unmake_null(Board &b, const NullUndo &u) {
+#ifdef DEBUG
+    // Catch misuse: unmake without prior make, or double unmake.
+    assert(b.side != u.old_side);
+#endif
     b.castling        = u.old_castling;
     b.ep_square       = u.old_ep_square;
     b.halfmove_clock  = u.old_halfmove_clock;
