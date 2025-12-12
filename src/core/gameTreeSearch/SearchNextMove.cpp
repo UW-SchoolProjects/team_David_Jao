@@ -209,6 +209,40 @@ static inline void decay_history()
         historyTable[s][f][t] >>= 1;
 }
 
+// --- Material helpers for pruning heuristics ---
+
+static inline int count_side_pawns(const Board &b, Side s)
+{
+  return popcount(bb_of(b, (static_cast<int>(s) << 3) | PAWN));
+}
+
+static inline int count_side_nonking(const Board &b, Side s)
+{
+  int idxBase = static_cast<int>(s) << 3;
+  int pawns   = popcount(bb_of(b, idxBase | PAWN));
+  int knights = popcount(bb_of(b, idxBase | KNIGHT));
+  int bishops = popcount(bb_of(b, idxBase | BISHOP));
+  int rooks   = popcount(bb_of(b, idxBase | ROOK));
+  int queens  = popcount(bb_of(b, idxBase | QUEEN));
+  return pawns + knights + bishops + rooks + queens;
+}
+
+static inline bool has_enough_material_for_null(const Board &b, Side s)
+{
+  int pawns = count_side_pawns(b, s);
+  int nonKing = count_side_nonking(b, s);
+  // Require at least one pawn or at least two total non-king pieces.
+  return pawns > 0 || nonKing >= 2;
+}
+
+static inline bool is_clear_endgame_for_null(const Board &b)
+{
+  int totalQueens = popcount(bb_of(b, WQUEEN)) + popcount(bb_of(b, BQUEEN));
+  int totalRooks  = popcount(bb_of(b, WROOK))  + popcount(bb_of(b, BROOK));
+  int totalPawns  = popcount(bb_of(b, WPAWN))  + popcount(bb_of(b, BPAWN));
+  return totalQueens == 0 && totalRooks <= 1 && totalPawns <= 6;
+}
+
 // Lightweight material values for heuristics (SEE placeholder)
 static inline int heuristic_piece_value(int piece)
 {
@@ -480,6 +514,7 @@ int search(Board &board,
   const int alphaOrig = alpha;
   const uint64_t key = board.zobrist_key;
   const Side sideToMove = static_cast<Side>(board.side);
+  const bool inCheck = isInCheck(board, sideToMove);
 
   int ttScore = 0;
   Move ttMove;
@@ -565,7 +600,7 @@ int search(Board &board,
 
   if (moves.empty())
   {
-    if (isInCheck(board, sideToMove))
+    if (inCheck)
     {
       // Checkmate: side to move has no moves and is in check.
       // Encode mate as a large negative score, slightly adjusted by ply
@@ -579,6 +614,40 @@ int search(Board &board,
       // Stalemate: draw
       TT.store(key, effectiveDepth, 0, TTFlag::EXACT, Move(), ply);
       return 0;
+    }
+  }
+
+  // --- Null-move pruning ---
+  // Skip in check, in thin material, or when depth too low.
+  if (!inCheck && has_enough_material_for_null(board, sideToMove))
+  {
+    const int nullReduction = is_clear_endgame_for_null(board) ? 3 : 2;
+    if (effectiveDepth > nullReduction)
+    {
+      int staticEval = 0;
+      bool haveStaticEval = false;
+
+      if (!haveStaticEval)
+      {
+        staticEval = evalFn(board);
+        haveStaticEval = true;
+      }
+      if (staticEval > 50 && staticEval >= beta)
+      {
+        NullUndo nu;
+        if (make_null(board, nu))
+        {
+          int nullDepth = effectiveDepth - 1 - nullReduction;
+          int nullScore = -search(board, nullDepth, -beta, -beta + 1, ply + 1, evalFn, /*captureChainLen=*/0, usedExtensions);
+          unmake_null(board);
+
+          if (nullScore >= beta)
+          {
+            TT.store(key, effectiveDepth, nullScore, TTFlag::LOWERBOUND, Move(), ply);
+            return nullScore;
+          }
+        }
+      }
     }
   }
 

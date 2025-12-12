@@ -284,8 +284,41 @@ bool make_move(Board &b, const Move &m) {
             bb_set_piece  (b, rook_to64,   rook_piece);
 
             zobrist_update_castling_move(b, BCQ);
-        }
     }
+}
+
+bool make_null(Board &b, NullUndo &u) {
+    // Save state for undo
+    u.old_castling        = b.castling;
+    u.old_ep_square       = b.ep_square;
+    u.old_halfmove_clock  = b.halfmove_clock;
+    u.old_fullmove_number = b.fullmove_number;
+    u.old_side            = static_cast<Side>(b.side);
+    u.old_zobrist_key     = b.zobrist_key;
+
+    // Null move: no piece displacement; clear EP, bump clocks, flip side.
+    b.ep_square = NO_SQUARE;
+    b.halfmove_clock += 1;
+    if (b.side == BLACK) {
+        b.fullmove_number += 1;
+    }
+
+    Side newSide = (b.side == WHITE ? BLACK : WHITE);
+    zobrist_update_castling_rights_EP_file(b, u.old_castling, u.old_ep_square, u.old_side, newSide);
+    b.zobrist_key ^= Z_SIDE;
+    b.side = newSide;
+
+    return true;
+}
+
+void unmake_null(Board &b, const NullUndo &u) {
+    b.castling        = u.old_castling;
+    b.ep_square       = u.old_ep_square;
+    b.halfmove_clock  = u.old_halfmove_clock;
+    b.fullmove_number = u.old_fullmove_number;
+    b.side            = u.old_side;
+    b.zobrist_key     = u.old_zobrist_key;
+}
 
     // --- 6) Move the piece on the board + bitboards ---
 
