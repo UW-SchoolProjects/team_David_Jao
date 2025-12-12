@@ -633,11 +633,13 @@ int search(Board &board,
   };
 
   const bool hasActiveEP = (board.ep_square != NO_SQUARE);
+  const bool nearFiftyMove = (board.halfmove_clock >= 98);
 
   if (!isNullSearch &&
       !inCheck &&
       ply > 0 &&
       !hasActiveEP &&
+      !nearFiftyMove &&
       has_enough_material_for_null(board, sideToMove) &&
       !is_potential_zugzwang(board))
   {
