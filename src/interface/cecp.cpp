@@ -164,11 +164,18 @@ static int parse_time_token_ms(const std::string &tok) {
         log_msg("Error: Out-of-range time token: " + tok);
         return 0;
     }
-    long long total_ms = (minutes * 60LL + seconds) * 1000LL;
-    if (total_ms > std::numeric_limits<int>::max()) {
+    // Pre-check to avoid overflow in intermediate calculations
+    const long long max_ms = static_cast<long long>(std::numeric_limits<int>::max());
+    if (minutes > (max_ms / 1000LL - seconds) / 60LL) {
         log_msg("Error: Time token too large (overflow): " + tok);
         return 0;
     }
+    long long total_secs = minutes * 60LL + seconds;
+    if (total_secs > max_ms / 1000LL) {
+        log_msg("Error: Time token too large (overflow): " + tok);
+        return 0;
+    }
+    long long total_ms = total_secs * 1000LL;
     return static_cast<int>(total_ms);
 }
 
@@ -182,7 +189,8 @@ void apply_my_move_elapsed(EngineSession &sess, int elapsed_ms, std::chrono::ste
     if (before > 0) {
         sess.my_time_ms = std::max(0, sess.my_time_ms - used);
     }
-    if (sess.increment_ms > 0 && before > 0) {
+    // Only award increment if we still have time left after the move (no flag fall)
+    if (sess.increment_ms > 0 && sess.my_time_ms > 0) {
         long long sum = static_cast<long long>(sess.my_time_ms) + static_cast<long long>(sess.increment_ms);
         if (sum > std::numeric_limits<int>::max()) {
             sess.my_time_ms = std::numeric_limits<int>::max();
