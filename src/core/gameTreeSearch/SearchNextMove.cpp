@@ -848,25 +848,28 @@ int search(Board &board,
     int searchDepthChild = effectiveDepth - 1;
     int score = 0;
 
-    // Futility pruning for shallow depths on quiet moves (no captures/promos), not in check, not capture-only, not checking moves.
+    // Futility pruning for shallow depths on quiet moves (no captures/promos), not in check, not capture-only.
     if (!inCheck &&
-        !givesCheck &&
         nextChainLen == 0 &&
         searchDepthChild <= 2 &&
         !m.isCapture() &&
         !m.isPromotion())
     {
-      int evalVal = get_static_eval();
-      // Avoid futility if we are near mate bounds.
-      if (evalVal < SCORE_MATE - MAX_PLY && evalVal > -SCORE_MATE + MAX_PLY)
+      // Avoid futility in clear endgames/zugzwang-prone cases or narrow windows.
+      if (!is_clear_endgame_for_null(board) && (beta - alpha) > 1)
       {
-        if (searchDepthChild == 1 && evalVal + 100 < alpha)
+        int evalVal = get_static_eval();
+        // Avoid futility if we are near mate bounds.
+        if (evalVal < SCORE_MATE - MAX_PLY && evalVal > -SCORE_MATE + MAX_PLY)
         {
-          continue;
-        }
-        if (searchDepthChild == 2 && evalVal + 200 < alpha)
-        {
-          continue;
+          if (searchDepthChild == 1 && evalVal + 100 < alpha)
+          {
+            continue;
+          }
+          if (searchDepthChild == 2 && evalVal + 200 < alpha)
+          {
+            continue;
+          }
         }
       }
     }
