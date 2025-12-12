@@ -528,8 +528,9 @@ int search(Board &board,
       // On hard timeout, preserve bounds by returning current alpha.
       return alpha;
     }
-    if (g_time_abort) {
-      // Soft timeout flagged: let callers unwind gracefully.
+    if (g_time_soft_abort) {
+      // Soft timeout flagged: request graceful unwind.
+      return alpha;
     }
   }
 // #ifdef ENGINE_LOGGING
@@ -1016,11 +1017,14 @@ static inline bool time_check_due() {
 }
 
 static inline bool time_expired() {
+  if (g_time_abort) return true;
   if (!g_time_budget) return false;
   auto now = std::chrono::steady_clock::now();
   auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_search_start).count();
-  const long long soft_limit = static_cast<long long>(g_time_budget->soft_ms) + g_soft_overrun_ms;
-  const long long hard_limit = g_time_budget->hard_ms;
+  const long long soft_base = std::max(0, g_time_budget->soft_ms);
+  const long long hard_base = std::max(0, g_time_budget->hard_ms);
+  const long long soft_limit = soft_base + std::max(0, g_soft_overrun_ms);
+  const long long hard_limit = hard_base;
   if (elapsed_ms >= hard_limit) {
     g_time_abort = true;    // hard stop: abort immediately
     return true;
