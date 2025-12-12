@@ -416,7 +416,8 @@ static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
 
     sess.side_to_move = sess.board.side;
     log_board_fen(sess.board, "After usermove");
-    sess.last_my_move_ts = std::chrono::steady_clock::now(); // our clock starts; GUI sends updated otim
+    // Opponent just moved; record their move end (our clock starts now).
+    sess.last_opp_move_ts = std::chrono::steady_clock::now();
 
     log_msg(sess.mode == EngineMode::PLAYING ? "play is on" : "play not on");
     if (sess.mode == EngineMode::PLAYING && sess.board.side == sess.engine_side) {
@@ -468,6 +469,7 @@ static void handle_result(EngineSession &sess, const std::string&) {
     sess.base_time_ms = 0;
     sess.increment_ms = 0;
     sess.time_per_move_ms = 0;
+    sess.max_depth = 0;
     auto now = std::chrono::steady_clock::now();
     sess.last_my_move_ts = now;
     sess.last_opp_move_ts = now;
@@ -486,7 +488,6 @@ static void handle_setboard(EngineSession &sess, const std::string &fen) {
     TT.clear();
     sess.side_to_move = sess.board.side;
     sess.mode = EngineMode::FORCE;
-    sess.engine_side = sess.side_to_move;
     sess.my_time_ms       = 0;
     sess.opp_time_ms      = 0;
     sess.moves_per_session = 0;
