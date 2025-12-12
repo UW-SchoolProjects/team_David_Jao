@@ -635,6 +635,10 @@ int search(Board &board,
   const bool hasActiveEP = (board.ep_square != NO_SQUARE);
   const bool nearFiftyMove = (board.halfmove_clock >= 98);
 
+  // Static eval computed once per node (lazy) for futility and reuse.
+  int staticEval = 0;
+  bool haveStaticEval = false;
+
   if (!isNullSearch &&
       !inCheck &&
       ply > 0 &&
@@ -825,9 +829,54 @@ int search(Board &board,
   for (int i = 0; i < moves.count; ++i) reordered[i] = moves.moves[order[i]];
   for (int i = 0; i < moves.count; ++i) moves.moves[i] = reordered[i];
 
+  // Compute static eval once per node (lazy)
+  auto get_static_eval = [&]() -> int {
+    if (!haveStaticEval)
+    {
+      staticEval = evalFn(board); // pre-move eval
+      haveStaticEval = true;
+    }
+    return staticEval;
+  };
+
   for (int i = 0; i < moves.count; ++i)
   {
     Move m = moves.moves[i];
+
+    // Negamax: flip perspective and bounds
+    int nextChainLen = m.isCapture() ? (captureChainLen + 1) : 0;
+    int searchDepthChild = effectiveDepth - 1;
+    int score = 0;
+
+    // Futility pruning for shallow depths on quiet moves (no captures/promos), not in check, not capture-only.
+    if (!inCheck &&
+        nextChainLen == 0 &&
+        searchDepthChild <= 2 &&
+        !m.isCapture() &&
+        !m.isPromotion())
+    {
+      // Avoid futility in clear endgames/zugzwang-prone cases or narrow windows.
+      if (!is_clear_endgame_for_null(board) && (beta - alpha) > 1)
+      {
+        // Skip futility if the quiet move is tactically losing.
+        if (static_exchange_eval(board, m) >= 0)
+        {
+          int evalVal = get_static_eval();
+          // Avoid futility if we are near mate bounds.
+          if (evalVal < SCORE_MATE - MAX_PLY && evalVal > -SCORE_MATE + MAX_PLY)
+          {
+            if (searchDepthChild == 1 && evalVal + 100 < alpha)
+            {
+              continue;
+            }
+            if (searchDepthChild == 2 && evalVal + 200 < alpha)
+            {
+              continue;
+            }
+          }
+        }
+      }
+    }
 
     if (!make_move(board, m))
       continue; // illegal move; skip
@@ -835,11 +884,6 @@ int search(Board &board,
     const Side nextSide = static_cast<Side>(board.side);
     const Side oppSide = (nextSide == WHITE ? BLACK : WHITE);
     const bool givesCheck = isInCheck(board, oppSide);
-
-    // Negamax: flip perspective and bounds
-    int nextChainLen = m.isCapture() ? (captureChainLen + 1) : 0;
-    int searchDepthChild = effectiveDepth - 1;
-    int score = 0;
 
     bool applyLMR = false;
     int reduction = 0;
