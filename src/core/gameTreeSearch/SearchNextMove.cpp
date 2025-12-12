@@ -635,6 +635,10 @@ int search(Board &board,
   const bool hasActiveEP = (board.ep_square != NO_SQUARE);
   const bool nearFiftyMove = (board.halfmove_clock >= 98);
 
+  // Static eval computed once per node (lazy) for futility and reuse.
+  int staticEval = 0;
+  bool haveStaticEval = false;
+
   if (!isNullSearch &&
       !inCheck &&
       ply > 0 &&
@@ -825,6 +829,16 @@ int search(Board &board,
   for (int i = 0; i < moves.count; ++i) reordered[i] = moves.moves[order[i]];
   for (int i = 0; i < moves.count; ++i) moves.moves[i] = reordered[i];
 
+  // Compute static eval once per node (lazy)
+  auto get_static_eval = [&]() -> int {
+    if (!haveStaticEval)
+    {
+      staticEval = evalFn(board);
+      haveStaticEval = true;
+    }
+    return staticEval;
+  };
+
   for (int i = 0; i < moves.count; ++i)
   {
     Move m = moves.moves[i];
@@ -840,6 +854,30 @@ int search(Board &board,
     int nextChainLen = m.isCapture() ? (captureChainLen + 1) : 0;
     int searchDepthChild = effectiveDepth - 1;
     int score = 0;
+
+    // Futility pruning for shallow depths on quiet moves (no captures/promos), not in check, not capture-only.
+    if (!inCheck &&
+        nextChainLen == 0 &&
+        searchDepthChild <= 2 &&
+        !m.isCapture() &&
+        !m.isPromotion())
+    {
+      int evalVal = get_static_eval();
+      // Avoid futility if we are near mate bounds.
+      if (evalVal < SCORE_MATE - MAX_PLY && evalVal > -SCORE_MATE + MAX_PLY)
+      {
+        if (searchDepthChild == 1 && evalVal + 100 < alpha)
+        {
+          unmake_move(board);
+          continue;
+        }
+        if (searchDepthChild == 2 && evalVal + 200 < alpha)
+        {
+          unmake_move(board);
+          continue;
+        }
+      }
+    }
 
     bool applyLMR = false;
     int reduction = 0;
