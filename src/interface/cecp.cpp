@@ -148,17 +148,42 @@ static int parse_time_token_ms(const std::string &tok) {
     size_t colon = tok.find(':');
     int minutes = 0;
     int seconds = 0;
-    if (colon == std::string::npos) {
-        minutes = std::stoi(tok);
-    } else {
-        minutes = std::stoi(tok.substr(0, colon));
-        seconds = std::stoi(tok.substr(colon + 1));
+    try {
+        if (colon == std::string::npos) {
+            minutes = std::stoi(tok);
+        } else {
+            minutes = std::stoi(tok.substr(0, colon));
+            seconds = std::stoi(tok.substr(colon + 1));
+        }
+    } catch (const std::exception &) {
+        log_msg("Error: Invalid time token format: " + tok);
+        return 0;
     }
     return (minutes * 60 + seconds) * 1000;
 }
 
 static int clamp_non_negative(long long v) {
     return v <= 0 ? 0 : static_cast<int>(v);
+}
+
+void apply_my_move_elapsed(EngineSession &sess, int elapsed_ms, std::chrono::steady_clock::time_point now_ts) {
+    int used = clamp_non_negative(elapsed_ms);
+    if (sess.my_time_ms > 0) {
+        sess.my_time_ms = std::max(0, sess.my_time_ms - used);
+    }
+    if (sess.increment_ms > 0) {
+        sess.my_time_ms += sess.increment_ms;
+    }
+    sess.last_my_move_ts = now_ts;
+    sess.last_opp_move_ts = now_ts; // opponent clock starts now
+}
+
+void apply_opp_move_elapsed(EngineSession &sess, int elapsed_ms, std::chrono::steady_clock::time_point now_ts) {
+    int used = clamp_non_negative(elapsed_ms);
+    if (sess.opp_time_ms > 0) {
+        sess.opp_time_ms = std::max(0, sess.opp_time_ms - used);
+    }
+    sess.last_opp_move_ts = now_ts;
 }
 
 // ---------------------------
@@ -306,7 +331,6 @@ static void handle_black(EngineSession &sess) {
 static void do_engine_move(EngineSession &sess) {
     log_msg("do_engine_move entry");
     auto move_start_ts = std::chrono::steady_clock::now();
-    sess.last_my_move_ts = move_start_ts;
 
     Move best = search_best_move(sess);
 
@@ -336,15 +360,7 @@ static void do_engine_move(EngineSession &sess) {
 
   auto move_end_ts = std::chrono::steady_clock::now();
   auto elapsed_ms_ll = std::chrono::duration_cast<std::chrono::milliseconds>(move_end_ts - move_start_ts).count();
-  int elapsed_ms = clamp_non_negative(elapsed_ms_ll);
-  if (sess.my_time_ms > 0) {
-      sess.my_time_ms = std::max(0, sess.my_time_ms - elapsed_ms);
-  }
-  if (sess.increment_ms > 0) {
-      sess.my_time_ms += sess.increment_ms;
-  }
-  sess.last_my_move_ts = move_end_ts;
-  sess.last_opp_move_ts = move_end_ts; // opponent clock starts now
+  apply_my_move_elapsed(sess, static_cast<int>(elapsed_ms_ll), move_end_ts);
 
   // Use std::endl to force an immediate flush to the GUI.
   std::cout << "move " << s << std::endl;
@@ -360,13 +376,6 @@ static void handle_go(EngineSession &sess) {
 
 static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
     log_msg("usermove " + mvStr);
-    auto now = std::chrono::steady_clock::now();
-    if (sess.opp_time_ms > 0) {
-        auto opp_elapsed_ms_ll = std::chrono::duration_cast<std::chrono::milliseconds>(now - sess.last_opp_move_ts).count();
-        int opp_elapsed_ms = clamp_non_negative(opp_elapsed_ms_ll);
-        sess.opp_time_ms = std::max(0, sess.opp_time_ms - opp_elapsed_ms);
-    }
-    sess.last_opp_move_ts = now;
     Move m;
     if (!parse_uci_move(sess.board, mvStr, m)) {
         log_msg("usermove rejected: not found in legal list");
@@ -383,7 +392,7 @@ static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
 
     sess.side_to_move = sess.board.side;
     log_board_fen(sess.board, "After usermove");
-    sess.last_my_move_ts = std::chrono::steady_clock::now(); // our clock starts
+    sess.last_my_move_ts = std::chrono::steady_clock::now(); // our clock starts; GUI sends updated otim
 
     log_msg(sess.mode == EngineMode::PLAYING ? "play is on" : "play not on");
     if (sess.mode == EngineMode::PLAYING && sess.board.side == sess.engine_side) {
@@ -391,14 +400,14 @@ static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
     }
 }
 
-static void handle_time(EngineSession &sess, int cs) {
+void handle_time(EngineSession &sess, int cs) {
     sess.my_time_ms = cs_to_ms(cs);
-    sess.last_my_move_ts = std::chrono::steady_clock::now();
+    // CECP time is authoritative clock sync, not a move boundary.
 }
 
-static void handle_otim(EngineSession &sess, int cs) {
+void handle_otim(EngineSession &sess, int cs) {
     sess.opp_time_ms = cs_to_ms(cs);
-    sess.last_opp_move_ts = std::chrono::steady_clock::now();
+    // CECP otim is authoritative clock sync, not a move boundary.
 }
 
 static void handle_ping(EngineSession &sess, int id) {
@@ -411,8 +420,10 @@ static void handle_level(EngineSession &sess,
                          const std::string &base_time_token,
                          int increment_seconds)
 {
+    if (moves_per_session < 0) moves_per_session = 0;
+    if (increment_seconds < 0) increment_seconds = 0;
     sess.moves_per_session = moves_per_session;
-    sess.base_time_ms      = parse_time_token_ms(base_time_token);
+    sess.base_time_ms      = std::max(0, parse_time_token_ms(base_time_token));
     sess.increment_ms      = increment_seconds * 1000;
 }
 

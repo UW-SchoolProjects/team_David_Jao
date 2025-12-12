@@ -138,6 +138,12 @@ void init_engine_session(EngineSession &sess);
 // Run the CECP main loop on stdin/stdout.
 void cecp_main_loop(EngineSession &sess);
 
+// Exposed for testing / simulation of clock handling.
+void handle_time(EngineSession &sess, int cs);
+void handle_otim(EngineSession &sess, int cs);
+void apply_my_move_elapsed(EngineSession &sess, int elapsed_ms, std::chrono::steady_clock::time_point now_ts);
+void apply_opp_move_elapsed(EngineSession &sess, int elapsed_ms, std::chrono::steady_clock::time_point now_ts);
+
 // Convert an internal Move to coord-style string like "e2e4",
 // "e7e8q" (promotion), "e1g1" (castling).
 std::string move_to_uci(const Move &m);
