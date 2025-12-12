@@ -107,6 +107,16 @@ struct UndoState {
     uint64_t old_zobrist_key;
 };
 
+// Minimal undo for null moves (no piece displacement).
+struct NullUndo {
+    int old_castling;
+    int old_ep_square;
+    int old_halfmove_clock;
+    int old_fullmove_number;
+    Side old_side;
+    uint64_t old_zobrist_key;
+};
+
 /**
  * Apply a move to the board, updating:
  *  - board.squares[]
@@ -135,5 +145,11 @@ bool make_move(Board &b, const Move &m);
  * Precondition: at least one move has been made (history not empty).
  */
 void unmake_move(Board &b);
+
+// Apply a null move (pass): clears EP, flips side, updates clocks/hash.
+bool make_null(Board &b, NullUndo &u);
+
+// Undo a null move.
+void unmake_null(Board &b, const NullUndo &u);
 
 #endif // MOVE_APPLY_H

@@ -209,6 +209,43 @@ static inline void decay_history()
         historyTable[s][f][t] >>= 1;
 }
 
+// --- Material helpers for pruning heuristics ---
+
+static inline int count_side_pawns(const Board &b, Side s)
+{
+  return popcount(bb_of(b, (static_cast<int>(s) << 3) | PAWN));
+}
+
+static inline int count_side_nonking(const Board &b, Side s)
+{
+  int idxBase = static_cast<int>(s) << 3;
+  int pawns   = popcount(bb_of(b, idxBase | PAWN));
+  int knights = popcount(bb_of(b, idxBase | KNIGHT));
+  int bishops = popcount(bb_of(b, idxBase | BISHOP));
+  int rooks   = popcount(bb_of(b, idxBase | ROOK));
+  int queens  = popcount(bb_of(b, idxBase | QUEEN));
+  return pawns + knights + bishops + rooks + queens;
+}
+
+static inline bool has_enough_material_for_null(const Board &b, Side s)
+{
+  int idxBase = static_cast<int>(s) << 3;
+  int pawns   = popcount(bb_of(b, idxBase | PAWN));
+  int rooks   = popcount(bb_of(b, idxBase | ROOK));
+  int queens  = popcount(bb_of(b, idxBase | QUEEN));
+  int minors  = popcount(bb_of(b, idxBase | KNIGHT)) + popcount(bb_of(b, idxBase | BISHOP));
+  // Allow null only with a pawn, any heavy piece, or at least three minors.
+  return pawns > 0 || rooks > 0 || queens > 0 || minors >= 3;
+}
+
+static inline bool is_clear_endgame_for_null(const Board &b)
+{
+  int totalQueens = popcount(bb_of(b, WQUEEN)) + popcount(bb_of(b, BQUEEN));
+  int totalRooks  = popcount(bb_of(b, WROOK))  + popcount(bb_of(b, BROOK));
+  int totalPawns  = popcount(bb_of(b, WPAWN))  + popcount(bb_of(b, BPAWN));
+  return totalQueens == 0 && totalRooks <= 1 && totalPawns <= 6;
+}
+
 // Lightweight material values for heuristics (SEE placeholder)
 static inline int heuristic_piece_value(int piece)
 {
@@ -469,7 +506,8 @@ int search(Board &board,
            int ply,
            EvalFn evalFn,
            int captureChainLen,
-           int extensionsUsed)
+           int extensionsUsed,
+           bool isNullSearch)
 {
 // #ifdef ENGINE_LOGGING
 //   log_msg("search start depth=" + std::to_string(depth) +
@@ -480,6 +518,7 @@ int search(Board &board,
   const int alphaOrig = alpha;
   const uint64_t key = board.zobrist_key;
   const Side sideToMove = static_cast<Side>(board.side);
+  const bool inCheck = isInCheck(board, sideToMove);
 
   int ttScore = 0;
   Move ttMove;
@@ -565,7 +604,7 @@ int search(Board &board,
 
   if (moves.empty())
   {
-    if (isInCheck(board, sideToMove))
+    if (inCheck)
     {
       // Checkmate: side to move has no moves and is in check.
       // Encode mate as a large negative score, slightly adjusted by ply
@@ -579,6 +618,57 @@ int search(Board &board,
       // Stalemate: draw
       TT.store(key, effectiveDepth, 0, TTFlag::EXACT, Move(), ply);
       return 0;
+    }
+  }
+
+  // --- Null-move pruning ---
+  // Skip in check, after a null search, with active EP, or in thin/zugzwang material.
+  auto is_potential_zugzwang = [&](const Board &bIn) {
+    int totalPawns  = popcount(bb_of(bIn, WPAWN)) + popcount(bb_of(bIn, BPAWN));
+    int totalQueens = popcount(bb_of(bIn, WQUEEN)) + popcount(bb_of(bIn, BQUEEN));
+    int totalRooks  = popcount(bb_of(bIn, WROOK))  + popcount(bb_of(bIn, BROOK));
+    int totalMinors = popcount(bb_of(bIn, WKNIGHT)) + popcount(bb_of(bIn, WBISHOP)) +
+                      popcount(bb_of(bIn, BKNIGHT)) + popcount(bb_of(bIn, BBISHOP));
+    return (totalPawns == 0 && totalQueens == 0 && totalRooks == 0 && totalMinors <= 2);
+  };
+
+  const bool hasActiveEP = (board.ep_square != NO_SQUARE);
+  const bool nearFiftyMove = (board.halfmove_clock >= 98);
+
+  if (!isNullSearch &&
+      !inCheck &&
+      ply > 0 &&
+      !hasActiveEP &&
+      !nearFiftyMove &&
+      has_enough_material_for_null(board, sideToMove) &&
+      !is_potential_zugzwang(board))
+  {
+    // Avoid null move when in mate-bound windows; preserve mate distance ordering.
+    if (beta < SCORE_MATE - 2 * MAX_PLY && beta > -SCORE_MATE + 2 * MAX_PLY)
+    {
+      const int nullReduction = is_clear_endgame_for_null(board) ? 3 : 2;
+      // Require enough remaining depth after reduction to keep cutoff stable.
+      if (effectiveDepth >= nullReduction + 2)
+      {
+      int staticEval = evalFn(board);
+      if (staticEval >= beta)
+      {
+        NullUndo nu;
+        if (make_null(board, nu))
+        {
+          int nullDepth = effectiveDepth - 1 - nullReduction;
+            int nullScore = -search(board, nullDepth, -beta, -beta + 1, ply + 1, evalFn, /*captureChainLen=*/0, usedExtensions, /*isNullSearch=*/true);
+            unmake_null(board, nu);
+
+          if (nullScore >= beta)
+          {
+            // Store safe lower bound and return beta to avoid polluting TT with reduced-depth score.
+            TT.store(key, nullDepth, beta, TTFlag::LOWERBOUND, Move(), ply);
+            return beta;
+          }
+        }
+      }
+    }
     }
   }
 
@@ -742,7 +832,7 @@ int search(Board &board,
 
     // Negamax: flip perspective and bounds
     int nextChainLen = m.isCapture() ? (captureChainLen + 1) : 0;
-    int score = -search(board, effectiveDepth - 1, -beta, -alpha, ply + 1, evalFn, nextChainLen, usedExtensions);
+    int score = -search(board, effectiveDepth - 1, -beta, -alpha, ply + 1, evalFn, nextChainLen, usedExtensions, /*isNullSearch=*/false);
 
     unmake_move(board);
 
@@ -826,7 +916,7 @@ Move getBestMove(Board &board, int maxDepth, EvalFn evalFn)
       // First iteration: full-window search.
       alpha = -SCORE_INF;
       beta = SCORE_INF;
-      score = search(board, depth, alpha, beta, /*ply=*/0, evalFn, /*captureChainLen=*/0, /*extensionsUsed=*/0);
+      score = search(board, depth, alpha, beta, /*ply=*/0, evalFn, /*captureChainLen=*/0, /*extensionsUsed=*/0, /*isNullSearch=*/false);
     }
     else
     {
@@ -834,14 +924,14 @@ Move getBestMove(Board &board, int maxDepth, EvalFn evalFn)
       beta = bestScore + ASP_WINDOW;
 
       // First try with the narrow window
-      score = search(board, depth, alpha, beta, /*ply=*/0, evalFn, /*captureChainLen=*/0, /*extensionsUsed=*/0);
+      score = search(board, depth, alpha, beta, /*ply=*/0, evalFn, /*captureChainLen=*/0, /*extensionsUsed=*/0, /*isNullSearch=*/false);
 
       // If we fail low or high, re-search with full window
       if (score <= alpha || score >= beta)
       {
         alpha = -SCORE_INF;
         beta = SCORE_INF;
-        score = search(board, depth, alpha, beta, /*ply=*/0, evalFn, /*captureChainLen=*/0, /*extensionsUsed=*/0);
+      score = search(board, depth, alpha, beta, /*ply=*/0, evalFn, /*captureChainLen=*/0, /*extensionsUsed=*/0, /*isNullSearch=*/false);
       }
     }
 
