@@ -858,17 +858,21 @@ int search(Board &board,
       // Avoid futility in clear endgames/zugzwang-prone cases or narrow windows.
       if (!is_clear_endgame_for_null(board) && (beta - alpha) > 1)
       {
-        int evalVal = get_static_eval();
-        // Avoid futility if we are near mate bounds.
-        if (evalVal < SCORE_MATE - MAX_PLY && evalVal > -SCORE_MATE + MAX_PLY)
+        // Skip futility if the quiet move is tactically losing.
+        if (static_exchange_eval(board, m) >= 0)
         {
-          if (searchDepthChild == 1 && evalVal + 100 < alpha)
+          int evalVal = get_static_eval();
+          // Avoid futility if we are near mate bounds.
+          if (evalVal < SCORE_MATE - MAX_PLY && evalVal > -SCORE_MATE + MAX_PLY)
           {
-            continue;
-          }
-          if (searchDepthChild == 2 && evalVal + 200 < alpha)
-          {
-            continue;
+            if (searchDepthChild == 1 && evalVal + 100 < alpha)
+            {
+              continue;
+            }
+            if (searchDepthChild == 2 && evalVal + 200 < alpha)
+            {
+              continue;
+            }
           }
         }
       }
