@@ -13,7 +13,6 @@ TimeBudget compute_time_budget(int remaining_ms,
                                int increment_ms,
                                int time_per_move_ms,
                                int moves_left_est,
-                               bool pv_unstable,
                                bool in_check,
                                bool capture_heavy);
 

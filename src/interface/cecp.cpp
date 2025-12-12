@@ -189,15 +189,22 @@ static void gather_root_context(const Board &b, bool &in_check, bool &capture_he
     in_check = isInCheck(b, side);
 
     MoveList moves;
-    get_variant_moves(const_cast<Board&>(b), side, moves);
+    Board bcopy = b;
+    validMoveGeneration(bcopy, side, moves, /*captureOnly=*/false);
+    if (moves.count == 0) {
+        capture_heavy = false;
+        return;
+    }
     int captures = 0;
     for (int i = 0; i < moves.count; ++i) {
         if (moves.moves[i].isCapture()) {
             ++captures;
         }
     }
-    bool capture_only = (captures > 0 && captures == moves.count);
-    capture_heavy = capture_only && moves.count >= 6;
+    // Capture-heavy: captures dominate a reasonably large move set.
+    const bool many_moves = moves.count >= 6;
+    const bool capture_dominant = (captures > 0) && (captures * 2 >= moves.count);
+    capture_heavy = many_moves && capture_dominant;
 }
 
 void apply_my_move_elapsed(EngineSession &sess, int elapsed_ms, std::chrono::steady_clock::time_point now_ts) {
@@ -295,19 +302,12 @@ static Move search_best_move(EngineSession &sess) {
     bool capture_heavy = false;
     gather_root_context(sess.board, in_check, capture_heavy);
 
-    // PV instability for this move: compare to last search result if available.
-    bool pv_unstable = false;
-    if (sess.has_root_score && sess.last_root_score != 0) {
-        pv_unstable = true;
-    }
-
     int remaining = sess.my_time_ms > 0 ? sess.my_time_ms : 50;
     int moves_left = sess.moves_per_session > 0 ? sess.moves_per_session : 30;
     TimeBudget budget = compute_time_budget(remaining,
                                             sess.increment_ms,
                                             sess.time_per_move_ms,
                                             moves_left,
-                                            pv_unstable,
                                             in_check,
                                             capture_heavy);
 

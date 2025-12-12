@@ -521,8 +521,15 @@ int search(Board &board,
            int extensionsUsed,
            bool isNullSearch)
 {
-  if (g_time_budget && time_check_due() && time_expired()) {
-    return alpha; // Abort search due to time; propagate upwards.
+  if (g_time_budget && time_check_due()) {
+    bool hard_stop = time_expired();
+    if (hard_stop) {
+      // On hard timeout, return neutral to avoid bound corruption.
+      return 0;
+    }
+    if (g_time_abort) {
+      // Soft timeout flagged: let callers unwind gracefully.
+    }
   }
 // #ifdef ENGINE_LOGGING
 //   log_msg("search start depth=" + std::to_string(depth) +
@@ -1011,15 +1018,15 @@ static inline bool time_expired() {
   if (!g_time_budget) return false;
   auto now = std::chrono::steady_clock::now();
   auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_search_start).count();
-  long long soft_limit = static_cast<long long>(g_time_budget->soft_ms) + g_soft_overrun_ms;
-  long long hard_limit = g_time_budget->hard_ms;
+  const long long soft_limit = static_cast<long long>(g_time_budget->soft_ms) + g_soft_overrun_ms;
+  const long long hard_limit = g_time_budget->hard_ms;
   if (elapsed_ms >= hard_limit) {
-    g_time_abort = true;
+    g_time_abort = true;  // hard stop: abort immediately
     return true;
   }
   if (elapsed_ms >= soft_limit) {
-    g_time_abort = true;
-    return true;
+    g_time_abort = true;  // soft stop: request graceful exit
+    return false;
   }
   return false;
 }
