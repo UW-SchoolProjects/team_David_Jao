@@ -833,7 +833,7 @@ int search(Board &board,
   auto get_static_eval = [&]() -> int {
     if (!haveStaticEval)
     {
-      staticEval = evalFn(board);
+      staticEval = evalFn(board); // pre-move eval
       haveStaticEval = true;
     }
     return staticEval;
@@ -843,20 +843,14 @@ int search(Board &board,
   {
     Move m = moves.moves[i];
 
-    if (!make_move(board, m))
-      continue; // illegal move; skip
-
-    const Side nextSide = static_cast<Side>(board.side);
-    const Side oppSide = (nextSide == WHITE ? BLACK : WHITE);
-    const bool givesCheck = isInCheck(board, oppSide);
-
     // Negamax: flip perspective and bounds
     int nextChainLen = m.isCapture() ? (captureChainLen + 1) : 0;
     int searchDepthChild = effectiveDepth - 1;
     int score = 0;
 
-    // Futility pruning for shallow depths on quiet moves (no captures/promos), not in check, not capture-only.
+    // Futility pruning for shallow depths on quiet moves (no captures/promos), not in check, not capture-only, not checking moves.
     if (!inCheck &&
+        !givesCheck &&
         nextChainLen == 0 &&
         searchDepthChild <= 2 &&
         !m.isCapture() &&
@@ -868,16 +862,21 @@ int search(Board &board,
       {
         if (searchDepthChild == 1 && evalVal + 100 < alpha)
         {
-          unmake_move(board);
           continue;
         }
         if (searchDepthChild == 2 && evalVal + 200 < alpha)
         {
-          unmake_move(board);
           continue;
         }
       }
     }
+
+    if (!make_move(board, m))
+      continue; // illegal move; skip
+
+    const Side nextSide = static_cast<Side>(board.side);
+    const Side oppSide = (nextSide == WHITE ? BLACK : WHITE);
+    const bool givesCheck = isInCheck(board, oppSide);
 
     bool applyLMR = false;
     int reduction = 0;
