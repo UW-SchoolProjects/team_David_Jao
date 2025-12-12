@@ -92,6 +92,8 @@ See LICENSE file for details.
 #include <algorithm>
 #include <vector>
 #include <unordered_map>
+#include <chrono>
+#include <cmath>
 
 #ifdef ENGINE_LOGGING
 #include <string>
@@ -208,6 +210,16 @@ static inline void decay_history()
       for (int t = 0; t < 64; ++t)
         historyTable[s][f][t] >>= 1;
 }
+
+// -------------- Time control state --------------
+static const TimeBudget *g_time_budget = nullptr;
+static std::chrono::steady_clock::time_point g_search_start;
+static bool g_time_abort = false;
+static uint64_t g_time_check_counter = 0;
+static int g_soft_overrun_ms = 0;
+
+static inline bool time_check_due();
+static inline bool time_expired();
 
 // --- Material helpers for pruning heuristics ---
 
@@ -509,6 +521,9 @@ int search(Board &board,
            int extensionsUsed,
            bool isNullSearch)
 {
+  if (g_time_budget && time_check_due() && time_expired()) {
+    return alpha; // Abort search due to time; propagate upwards.
+  }
 // #ifdef ENGINE_LOGGING
 //   log_msg("search start depth=" + std::to_string(depth) +
 //           " alpha=" + std::to_string(alpha) +
@@ -987,7 +1002,29 @@ int search(Board &board,
   return bestScore;
 }
 
-Move getBestMove(Board &board, int maxDepth, EvalFn evalFn)
+static inline bool time_check_due() {
+  // Throttle to every 1024 nodes
+  return (++g_time_check_counter & 1023ULL) == 0;
+}
+
+static inline bool time_expired() {
+  if (!g_time_budget) return false;
+  auto now = std::chrono::steady_clock::now();
+  auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_search_start).count();
+  long long soft_limit = static_cast<long long>(g_time_budget->soft_ms) + g_soft_overrun_ms;
+  long long hard_limit = g_time_budget->hard_ms;
+  if (elapsed_ms >= hard_limit) {
+    g_time_abort = true;
+    return true;
+  }
+  if (elapsed_ms >= soft_limit) {
+    g_time_abort = true;
+    return true;
+  }
+  return false;
+}
+
+Move getBestMove(Board &board, int maxDepth, EvalFn evalFn, const TimeBudget *timeBudget, int *outRootScore)
 {
 #ifdef ENGINE_LOGGING
   log_msg("getBestMove start maxDepth=" + std::to_string(maxDepth));
@@ -996,8 +1033,18 @@ Move getBestMove(Board &board, int maxDepth, EvalFn evalFn)
   Move bestMove;     // move to return
   int bestScore = 0; // last stable root score
   bool havePV = false;
+  int prevDepthScore = 0;
+  bool havePrevDepthScore = false;
+  Move lastCompletedPVMove;
+  int lastCompletedPVScore = 0;
 
   // Iterative deepening loop: depths 1..maxDepth
+  g_time_budget = timeBudget;
+  g_search_start = std::chrono::steady_clock::now();
+  g_time_abort = false;
+  g_time_check_counter = 0;
+  g_soft_overrun_ms = 0;
+
   for (int depth = 1; depth <= maxDepth; ++depth)
   {
     int alpha, beta;
@@ -1027,12 +1074,27 @@ Move getBestMove(Board &board, int maxDepth, EvalFn evalFn)
       }
     }
 
+    // Abort if time expired during this iteration
+    if (g_time_abort || time_expired()) {
+      break;
+    }
+
     // After search, PV for this depth is in pvTable[0]
     if (pvLength[0] > 0)
     {
+      if (havePrevDepthScore && std::abs(score - prevDepthScore) > 40) {
+        g_soft_overrun_ms = 25; // allow small overrun on unstable PV
+      } else {
+        g_soft_overrun_ms = 0;
+      }
+      prevDepthScore = score;
+      havePrevDepthScore = true;
+
       bestMove = pvTable[0][0];
       bestScore = score;
       havePV = true;
+      lastCompletedPVMove = bestMove;
+      lastCompletedPVScore = bestScore;
 
       // (Optional) You can print or log the PV line here for debugging:
       // std::cout << "info depth " << depth << " score cp " << bestScore << " pv ";
@@ -1050,6 +1112,15 @@ Move getBestMove(Board &board, int maxDepth, EvalFn evalFn)
 
     // Decay history each completed iteration to keep recency bias
     decay_history();
+  }
+
+  if (outRootScore) {
+    *outRootScore = bestScore;
+  }
+
+  if (!havePV && !lastCompletedPVMove.isNull()) {
+    bestMove = lastCompletedPVMove;
+    bestScore = lastCompletedPVScore;
   }
 
   if (!havePV)

@@ -125,6 +125,10 @@ struct EngineSession {
     int time_per_move_ms  = 0; // from 'st' (fixed seconds per move), 0 if unused
     int max_depth         = 0; // from 'sd', 0 if unlimited
 
+    // last root score from previous search (centipawns), if available
+    int last_root_score   = 0;
+    bool has_root_score   = false;
+
     // last move timestamps for both sides
     std::chrono::steady_clock::time_point last_my_move_ts;
     std::chrono::steady_clock::time_point last_opp_move_ts;
