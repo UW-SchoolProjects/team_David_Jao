@@ -833,7 +833,8 @@ int search(Board &board,
       continue; // illegal move; skip
 
     const Side nextSide = static_cast<Side>(board.side);
-    const bool givesCheck = isInCheck(board, nextSide);
+    const Side oppSide = (nextSide == WHITE ? BLACK : WHITE);
+    const bool givesCheck = isInCheck(board, oppSide);
 
     // Negamax: flip perspective and bounds
     int nextChainLen = m.isCapture() ? (captureChainLen + 1) : 0;
@@ -863,8 +864,15 @@ int search(Board &board,
       score = -search(board, reducedDepth, -beta, -alpha, ply + 1, evalFn, nextChainLen, usedExtensions, /*isNullSearch=*/false);
       if (score > alpha)
       {
-        // Re-search at full depth when reduced search improves alpha.
-        score = -search(board, searchDepthChild, -beta, -alpha, ply + 1, evalFn, nextChainLen, usedExtensions, /*isNullSearch=*/false);
+        if (score >= beta)
+        {
+          // Reduced search already fails high; treat as cutoff.
+        }
+        else
+        {
+          // Re-search at full depth when reduced search improves alpha.
+          score = -search(board, searchDepthChild, -beta, -alpha, ply + 1, evalFn, nextChainLen, usedExtensions, /*isNullSearch=*/false);
+        }
       }
     }
     else
