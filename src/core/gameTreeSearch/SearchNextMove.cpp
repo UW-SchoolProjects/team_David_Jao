@@ -675,7 +675,8 @@ int search(Board &board,
   int bestScore = -SCORE_INF;
   Move bestMove; // for PV / TT (not used directly by caller)
   bool didCutoff = false;
-  const bool isPVNode = (beta - alpha > 1);
+  const bool isPVNode = (beta > alpha + 1);
+  const bool inCheckParent = isInCheck(board, sideToMove);
 
   // Hash move ordering: search TT move first if present.
   auto captureScore = [&](const Move &m) -> int {
@@ -842,6 +843,7 @@ int search(Board &board,
     bool applyLMR = false;
     int reduction = 0;
     if (!isPVNode &&
+        !inCheckParent &&
         searchDepthChild >= 2 && // parent depth >=3
         i >= 3 &&                // 4th move or later (0-based)
         !m.isCapture() &&
@@ -856,9 +858,9 @@ int search(Board &board,
 
       applyLMR = true;
       score = -search(board, reducedDepth, -beta, -alpha, ply + 1, evalFn, nextChainLen, usedExtensions, /*isNullSearch=*/false);
-      if (score >= beta)
+      if (score > alpha)
       {
-        // Fail-high recovery at full depth
+        // Re-search at full depth when reduced search improves alpha.
         score = -search(board, searchDepthChild, -beta, -alpha, ply + 1, evalFn, nextChainLen, usedExtensions, /*isNullSearch=*/false);
       }
     }
