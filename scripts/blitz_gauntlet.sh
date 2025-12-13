@@ -83,8 +83,13 @@ cleanup() {
 trap cleanup EXIT
 
 RUN_LOG="$(mktemp)"
+DEBUG_FLAGS=()
+if [ "${DEBUG_CUTECHESS:-0}" -ne 0 ]; then
+  DEBUG_FLAGS+=("-debug")
+fi
+
 cutechess-cli \
-  ${DEBUG_CUTECHESS:+-debug} \
+  "${DEBUG_FLAGS[@]}" \
   -engine cmd="$ENGINE_NEW_CMD" proto=xboard \
   -engine cmd="$ENGINE_OLD_CMD" proto=xboard \
   -each tc=$TC \
