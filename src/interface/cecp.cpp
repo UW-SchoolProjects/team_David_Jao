@@ -320,6 +320,12 @@ static Move search_best_move(EngineSession &sess) {
         sess.last_root_score = rootScore;
         sess.has_root_score = true;
     }
+    // Fallback on abort: ensure we return a legal move
+    if (rootScore == SCORE_TIME_ABORT && best.isNull()) {
+        MoveList legal;
+        validMoveGeneration(sess.board, static_cast<Side>(sess.board.side), legal, /*captureOnly=*/false);
+        if (legal.count > 0) best = legal.moves[0];
+    }
 #ifdef ENGINE_LOGGING
     auto move_end = std::chrono::steady_clock::now();
     auto raw_ms = std::chrono::duration_cast<std::chrono::milliseconds>(move_end - move_start).count();

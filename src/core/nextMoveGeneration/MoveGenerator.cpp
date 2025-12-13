@@ -546,9 +546,12 @@ bool isInCheck(const Board &board, Side side)
 {
   // 1. Locate our king (as a bitboard and as a 0..63 index)
   U64 myKing = bb_of(board, side == WHITE ? WKING : BKING);
+#ifndef NDEBUG
+  assert(myKing != 0 && "King bitboard missing; invalid board state");
+#endif
   if (myKing == 0) {
-    // Defensive: if the bitboard is inconsistent (e.g., bad FEN), assume not in check.
-    return false;
+    // Conservative fallback in release builds
+    return true;
   }
 
   int kingSq = lsb_index(myKing); // 0..63 index

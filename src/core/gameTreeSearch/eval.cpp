@@ -555,23 +555,21 @@ int basicEvaluate(const Board &board)
     }
   }
 
-  // --- 50-move proximity penalty (symmetric) ---
-  // Encourage finishing or resetting the counter before a forced draw.
-  // Applied from White POV; bucketed to keep it mild.
+  // --- 50-move proximity penalty (apply in side-to-move POV) ---
+  int sideToMovePenalty = 0;
   {
     int hm = board.halfmove_clock;
-    int penalty = 0;
     if (hm > 60)
     {
-      penalty = (hm - 60) * 3; // 3 cp per ply after 60
+      sideToMovePenalty = (hm - 60) * 3; // 3 cp per ply after 60
     }
-    scoreWhite -= penalty;
   }
 
   // Convert from White POV to side-to-move POV:
   // Positive = good for side to move.
-  if (board.side == WHITE)
-    return scoreWhite;
-  else
-    return -scoreWhite;
+  int stmScore = (board.side == WHITE) ? scoreWhite : -scoreWhite;
+
+  // Penalize side to move equally in either case
+  stmScore -= sideToMovePenalty;
+  return stmScore;
 }

@@ -614,6 +614,14 @@ int search(Board &board,
   // Initialize PV length for this ply (no moves yet)
   pvLength[ply] = 0;
 
+  // --- Depth / leaf handling ---
+  // 50-move rule or insufficient material → draw (prioritize rule-based draws)
+  if (board.halfmove_clock >= 100 || isInsufficientMaterial(board))
+  {
+    TT.store(key, effectiveDepth, 0, TTFlag::EXACT, Move(), ply);
+    return 0;
+  }
+
   if (moves.empty())
   {
     if (inCheck)
@@ -631,14 +639,6 @@ int search(Board &board,
       TT.store(key, effectiveDepth, 0, TTFlag::EXACT, Move(), ply);
       return 0;
     }
-  }
-
-  // --- Depth / leaf handling ---
-  // 50-move rule or insufficient material → draw
-  if (board.halfmove_clock >= 100 || isInsufficientMaterial(board))
-  {
-    TT.store(key, effectiveDepth, 0, TTFlag::EXACT, Move(), ply);
-    return 0;
   }
 
   if (effectiveDepth <= 0)

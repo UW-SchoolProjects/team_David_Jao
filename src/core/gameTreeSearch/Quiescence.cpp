@@ -127,18 +127,24 @@ int qsearch(Board &board, int alpha, int beta, int ply, EvalFn evalFn)
   MoveList moves;
   validMoveGeneration(board, sideToMove, moves, /*captureOnly=*/inCheck ? false : true);
 
-  // No moves: either checkmate or stalemate
+  // No moves: either checkmate or (maybe) stalemate
   if (moves.empty()) {
-    int result;
     if (inCheck) {
       // Side to move is checkmated; encode distance-to-mate.
-      result = -(SCORE_MATE - ply);
+      int result = -(SCORE_MATE - ply);
+      TT.store(key, 0, result, TTFlag::EXACT, Move(), ply);
+      return result;
     } else {
-      // Stalemate is a draw
-      result = 0;
+      // Not in check: confirm true stalemate with full legal move generation
+      MoveList allMoves;
+      validMoveGeneration(board, sideToMove, allMoves, /*captureOnly=*/false);
+      if (allMoves.empty()) {
+        int result = 0; // true stalemate
+        TT.store(key, 0, result, TTFlag::EXACT, Move(), ply);
+        return result;
+      }
+      // Quiet moves exist: proceed (stand-pat path below)
     }
-    TT.store(key, 0, result, TTFlag::EXACT, Move(), ply);
-    return result;
   }
 
   // Stand-pat evaluation (side-to-move perspective)
