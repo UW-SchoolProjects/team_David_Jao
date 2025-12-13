@@ -546,9 +546,8 @@ bool isInCheck(const Board &board, Side side)
 {
   // 1. Locate our king (as a bitboard and as a 0..63 index)
   U64 myKing = bb_of(board, side == WHITE ? WKING : BKING);
-  assert(myKing != 0);
   if (myKing == 0) {
-    // Defensive fallback in non-assert builds to avoid UB.
+    // Defensive: if the bitboard is inconsistent (e.g., bad FEN), assume not in check.
     return false;
   }
 
