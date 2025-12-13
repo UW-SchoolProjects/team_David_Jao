@@ -95,6 +95,9 @@ See LICENSE file for details.
 #include <chrono>
 #include <cmath>
 
+// Sentinel returned when search aborts due to time limit.
+static constexpr int SCORE_TIME_ABORT = 32001;
+
 #ifdef ENGINE_LOGGING
 #include <string>
 #include <iostream>
@@ -526,11 +529,11 @@ int search(Board &board,
     bool hard_stop = time_expired();
     if (hard_stop) {
       // On hard timeout, preserve bounds by returning current alpha.
-      return alpha;
+      return SCORE_TIME_ABORT;
     }
     if (g_time_soft_abort) {
       // Soft timeout flagged: request graceful unwind.
-      return alpha;
+      return SCORE_TIME_ABORT;
     }
   }
 // #ifdef ENGINE_LOGGING
@@ -686,6 +689,10 @@ int search(Board &board,
         {
           int nullDepth = effectiveDepth - 1 - nullReduction;
             int nullScore = -search(board, nullDepth, -beta, -beta + 1, ply + 1, evalFn, /*captureChainLen=*/0, usedExtensions, /*isNullSearch=*/true);
+            if (nullScore == SCORE_TIME_ABORT) {
+              unmake_null(board, nu);
+              return SCORE_TIME_ABORT;
+            }
             unmake_null(board, nu);
 
           if (nullScore >= beta)
@@ -928,6 +935,10 @@ int search(Board &board,
       if (reducedDepth < 1) reducedDepth = 1;
 
       score = -search(board, reducedDepth, -beta, -alpha, ply + 1, evalFn, nextChainLen, usedExtensions, /*isNullSearch=*/false);
+      if (score == SCORE_TIME_ABORT) {
+        unmake_move(board);
+        return SCORE_TIME_ABORT;
+      }
       if (score > alpha)
       {
         if (score >= beta)
@@ -938,12 +949,20 @@ int search(Board &board,
         {
           // Re-search at full depth when reduced search improves alpha.
           score = -search(board, searchDepthChild, -beta, -alpha, ply + 1, evalFn, nextChainLen, usedExtensions, /*isNullSearch=*/false);
+          if (score == SCORE_TIME_ABORT) {
+            unmake_move(board);
+            return SCORE_TIME_ABORT;
+          }
         }
       }
     }
     else
     {
       score = -search(board, searchDepthChild, -beta, -alpha, ply + 1, evalFn, nextChainLen, usedExtensions, /*isNullSearch=*/false);
+      if (score == SCORE_TIME_ABORT) {
+        unmake_move(board);
+        return SCORE_TIME_ABORT;
+      }
     }
 
     unmake_move(board);
@@ -1080,13 +1099,19 @@ Move getBestMove(Board &board, int maxDepth, EvalFn evalFn, const TimeBudget *ti
 
       // First try with the narrow window
       score = search(board, depth, alpha, beta, /*ply=*/0, evalFn, /*captureChainLen=*/0, /*extensionsUsed=*/0, /*isNullSearch=*/false);
+      if (score == SCORE_TIME_ABORT) {
+        g_time_abort = true;
+      }
 
       // If we fail low or high, re-search with full window
-      if (score <= alpha || score >= beta)
+      if (!g_time_abort && (score <= alpha || score >= beta))
       {
         alpha = -SCORE_INF;
         beta = SCORE_INF;
       score = search(board, depth, alpha, beta, /*ply=*/0, evalFn, /*captureChainLen=*/0, /*extensionsUsed=*/0, /*isNullSearch=*/false);
+        if (score == SCORE_TIME_ABORT) {
+          g_time_abort = true;
+        }
       }
     }
 
