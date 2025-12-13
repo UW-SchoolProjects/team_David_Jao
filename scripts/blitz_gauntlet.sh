@@ -92,7 +92,7 @@ cutechess-cli \
   -pgnout "$PGN_FILE" \
   -repeat \
   -recover \
-  | tee -a "$LOG_FILE" | tee "$RUN_LOG"
+  2>&1 | tee -a "$LOG_FILE" | tee "$RUN_LOG"
 status=${PIPESTATUS[0]}
 if [ "$status" -ne 0 ]; then
   echo "ERROR: cutechess-cli exited with status $status" | tee -a "$LOG_FILE"

@@ -15,6 +15,17 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BIN="$ROOT/squashfs-root/usr/bin/cutechess-cli"
 
 if [[ ! -x "$BIN" ]]; then
+  # Fall back to a system cutechess-cli if available (avoid recursion)
+  # Drop this script's directory from PATH before searching.
+  PATH_FALLBACK="$PATH"
+  case "$PATH_FALLBACK" in
+    "$SCRIPT_DIR:"*) PATH_FALLBACK="${PATH_FALLBACK#${SCRIPT_DIR}:}" ;;
+    *":$SCRIPT_DIR") PATH_FALLBACK="${PATH_FALLBACK%:${SCRIPT_DIR}}" ;;
+  esac
+  alt_path=$(PATH="$PATH_FALLBACK" command -v cutechess-cli || true)
+  if [[ -n "$alt_path" ]]; then
+    exec "$alt_path" "$@"
+  fi
   echo "Error: cutechess-cli binary not found at $BIN" >&2
   exit 1
 fi
