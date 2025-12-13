@@ -78,18 +78,14 @@ fi
 cleanup() {
   [ -n "${ENGINE_NEW_WRAPPER:-}" ] && [ -f "$ENGINE_NEW_WRAPPER" ] && rm -f "$ENGINE_NEW_WRAPPER"
   [ -n "${ENGINE_OLD_WRAPPER:-}" ] && [ -f "$ENGINE_OLD_WRAPPER" ] && rm -f "$ENGINE_OLD_WRAPPER"
-  [ -n "${RUN_LOG:-}" ] && [ -f "$RUN_LOG" ] && rm -f "$RUN_LOG"
+  if [ "${KEEP_RUN_LOG:-0}" -eq 0 ]; then
+    [ -n "${RUN_LOG:-}" ] && [ -f "$RUN_LOG" ] && rm -f "$RUN_LOG"
+  fi
 }
 trap cleanup EXIT
 
 RUN_LOG="$(mktemp)"
-DEBUG_FLAGS=()
-if [ "${DEBUG_CUTECHESS:-0}" -ne 0 ]; then
-  DEBUG_FLAGS+=("-debug")
-fi
-
 cutechess-cli \
-  "${DEBUG_FLAGS[@]}" \
   -engine cmd="$ENGINE_NEW_CMD" proto=xboard \
   -engine cmd="$ENGINE_OLD_CMD" proto=xboard \
   -each tc=$TC \
