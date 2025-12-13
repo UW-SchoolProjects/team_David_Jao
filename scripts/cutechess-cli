@@ -15,14 +15,15 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BIN="$ROOT/squashfs-root/usr/bin/cutechess-cli"
 
 if [[ ! -x "$BIN" ]]; then
-  # Fall back to a system cutechess-cli if available (avoid recursion)
+  # Fall back to a system cutechess-cli if available (avoid recursion).
   # Drop this script's directory from PATH before searching.
-  PATH_FALLBACK="$PATH"
-  case "$PATH_FALLBACK" in
-    "$SCRIPT_DIR:"*) PATH_FALLBACK="${PATH_FALLBACK#${SCRIPT_DIR}:}" ;;
-    *":$SCRIPT_DIR") PATH_FALLBACK="${PATH_FALLBACK%:${SCRIPT_DIR}}" ;;
-    *":$SCRIPT_DIR:"*) PATH_FALLBACK="${PATH_FALLBACK/:${SCRIPT_DIR}:/\:}" ;;
-  esac
+  PATH_FALLBACK=""
+  IFS=':' read -r -a _path_parts <<< "$PATH"
+  for part in "${_path_parts[@]}"; do
+    if [[ -n "$part" && "$part" != "$SCRIPT_DIR" ]]; then
+      PATH_FALLBACK="${PATH_FALLBACK:+$PATH_FALLBACK:}$part"
+    fi
+  done
   alt_path=$(PATH="$PATH_FALLBACK" command -v cutechess-cli || true)
   if [[ -n "$alt_path" ]]; then
     exec "$alt_path" "$@"
