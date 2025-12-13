@@ -476,6 +476,7 @@ static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
         return;
     }
 
+    sess.has_root_score = false; // invalidate stale eval for new position
     sess.side_to_move = sess.board.side;
     log_board_fen(sess.board, "After usermove");
     // Opponent just moved; record their move end (our clock starts now).
@@ -514,14 +515,19 @@ static void handle_level(EngineSession &sess,
     sess.increment_ms      = increment_seconds * 1000;
 }
 
+static constexpr int MAX_TIME_PER_MOVE_MS = 60000; // 60 seconds cap to avoid runaway budgets
+
 static void handle_st(EngineSession &sess, int seconds) {
     if (seconds < 0) seconds = 0;
-    sess.time_per_move_ms = seconds * 1000;
+    long long ms = static_cast<long long>(seconds) * 1000LL;
+    if (ms > MAX_TIME_PER_MOVE_MS) ms = MAX_TIME_PER_MOVE_MS;
+    sess.time_per_move_ms = static_cast<int>(ms);
 }
 
 // Fixed time-per-move in milliseconds (custom helper for sampling harnesses).
 static void handle_st_ms(EngineSession &sess, int ms) {
     if (ms < 0) ms = 0;
+    if (ms > MAX_TIME_PER_MOVE_MS) ms = MAX_TIME_PER_MOVE_MS;
     sess.time_per_move_ms = ms;
 }
 
@@ -671,7 +677,11 @@ void cecp_main_loop(EngineSession &sess) {
             generate_variant_moves(sess.board, moves);
             std::cout << "moves";
             for (int i = 0; i < moves.count; ++i) {
-                std::cout << ' ' << move_to_uci(moves.moves[i]);
+                const Move &m = moves.moves[i];
+                if (make_move(sess.board, m)) {
+                    unmake_move(sess.board);
+                    std::cout << ' ' << move_to_uci(m);
+                }
             }
             std::cout << "\n";
         }

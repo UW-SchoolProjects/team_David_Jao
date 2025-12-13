@@ -35,16 +35,21 @@ def read_until(proc: subprocess.Popen, timeout: float, predicate: Callable[[str]
     end = time.time() + timeout
     while time.time() < end:
         remaining = end - time.time()
-        ready, _, _ = select.select([proc.stdout], [], [], remaining)
-        if proc.stdout in ready:
-            line = proc.stdout.readline()
-            if line == "":
-                return None
-            line = line.strip()
-            if not line:
+        try:
+            ready, _, _ = select.select([proc.stdout], [], [], remaining)
+            if proc.stdout in ready:
+                line = proc.stdout.readline()
+            else:
                 continue
-            if predicate(line):
-                return line
+        except (ValueError, OSError):
+            return None
+        if line == "":
+            return None
+        line = line.strip()
+        if not line:
+            continue
+        if predicate(line):
+            return line
     return None
 
 
@@ -86,10 +91,16 @@ def drain(proc: subprocess.Popen, timeout: float = 0.05) -> None:
     end = time.time() + timeout
     while time.time() < end:
         remaining = end - time.time()
-        ready, _, _ = select.select([proc.stdout], [], [], remaining)
+        try:
+            ready, _, _ = select.select([proc.stdout], [], [], remaining)
+        except (ValueError, OSError):
+            return
         if not ready:
             break
-        line = proc.stdout.readline()
+        try:
+            line = proc.stdout.readline()
+        except Exception:
+            return
         if line == "":
             break
 
@@ -102,7 +113,7 @@ def start_engine(cmd: str, extra_env: Optional[dict] = None) -> subprocess.Popen
         shlex.split(cmd),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
         text=True,
         bufsize=1,
         env=env,
@@ -121,7 +132,9 @@ def handshake(proc: subprocess.Popen, args) -> bool:
     send(proc, f"time {args.clock_cs}")
     send(proc, f"otim {args.clock_cs}")
     drain(proc)
-    return True
+    # Capability probe: require david_fen to respond promptly
+    probe = query_prefix(proc, "david_fen", "fen ", timeout=1.0)
+    return probe is not None
 
 
 def request_fen(proc: subprocess.Popen) -> Optional[str]:
@@ -153,6 +166,9 @@ def list_moves(proc: subprocess.Popen) -> List[str]:
 
 
 def randomize_opening(proc: subprocess.Popen, plies: int, rng: random.Random) -> None:
+    prev_fen = request_fen(proc)
+    if not prev_fen:
+        return
     for _ in range(plies):
         moves = list_moves(proc)
         if not moves:
@@ -160,6 +176,10 @@ def randomize_opening(proc: subprocess.Popen, plies: int, rng: random.Random) ->
         mv = rng.choice(moves)
         if not send(proc, f"usermove {mv}"):
             return
+        new_fen = request_fen(proc)
+        if not new_fen or new_fen == prev_fen:
+            return
+        prev_fen = new_fen
 
 
 def play_game(proc: subprocess.Popen, game_id: int, args, rng: random.Random, budget: int) -> List[List]:
@@ -194,7 +214,9 @@ def play_game(proc: subprocess.Popen, game_id: int, args, rng: random.Random, bu
         if move_line is None:
             break
         parts = move_line.split()
-        move = parts[1] if len(parts) >= 2 else ""
+        if len(parts) < 2 or not parts[1]:
+            break
+        move = parts[1]
         score = request_lastscore(proc)
         if should_sample and score is not None:
             rows.append([fen, score, phase, ply, side, game_id, move])
@@ -228,7 +250,10 @@ def main() -> None:
 
     opener = gzip.open if args.gzip else open
     mode = "wt"
-    with opener(args.output if not args.gzip else args.output + ".gz", mode, newline="") as fh:
+    output_path = args.output
+    if args.gzip and not output_path.endswith(".gz"):
+        output_path += ".gz"
+    with opener(output_path, mode, newline="") as fh:
         writer = csv.writer(fh)
         writer.writerow(["fen", "eval_cp", "phase", "ply", "side_to_move", "game_id", "move"])
 
@@ -254,7 +279,7 @@ def main() -> None:
                 except subprocess.TimeoutExpired:
                     proc.kill()
 
-    sys.stdout.write(f"Done. Collected {collected} positions into {args.output}{'.gz' if args.gzip else ''}\n")
+    sys.stdout.write(f"Done. Collected {collected} positions into {output_path}\n")
 
 
 if __name__ == "__main__":
