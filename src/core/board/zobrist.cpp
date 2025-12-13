@@ -115,6 +115,7 @@ void zobrist_init(uint64_t seed) {
 
     for (int f = 0; f < 8; ++f)
         Z_EP_FILE[f] = zobrist_rand();
+
 }
 
 uint64_t compute_zobrist(const Board &b) {

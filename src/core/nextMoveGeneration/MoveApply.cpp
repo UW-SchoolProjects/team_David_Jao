@@ -158,11 +158,13 @@ bool make_move(Board &b, const Move &m) {
     st.old_zobrist_key     = b.zobrist_key;
 
     // --- 2) Update clocks ---
+    int new_halfmove_clock = st.old_halfmove_clock;
     if (type_of(moved) == PAWN || (fl & MF_CAPTURE)) {
-        b.halfmove_clock = 0;
+        new_halfmove_clock = 0;
     } else {
-        b.halfmove_clock++;
+        new_halfmove_clock += 1;
     }
+    b.halfmove_clock = new_halfmove_clock;
 
     if (b.side == BLACK) {
         b.fullmove_number++;
@@ -360,7 +362,8 @@ bool make_null(Board &b, NullUndo &u) {
         b.zobrist_key ^= Z_EP_FILE[FILE_OF(b.ep_square)];
     }
     b.ep_square = NO_SQUARE;
-    b.halfmove_clock += 1;
+    int new_halfmove_clock = u.old_halfmove_clock + 1;
+    b.halfmove_clock = new_halfmove_clock;
     if (b.side == BLACK) {
         b.fullmove_number += 1;
     }

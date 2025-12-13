@@ -112,7 +112,10 @@ int qsearch(Board &board, int alpha, int beta, int ply, EvalFn evalFn)
     return eval;
   }
 
-  // 50-move rule or insufficient material → draw
+  const Side sideToMove = static_cast<Side>(board.side);
+  const bool inCheck = isInCheck(board, sideToMove);
+
+  // 50-move rule or insufficient material → draw (handle early to avoid mis-scoring stalemates)
   extern bool isInsufficientMaterial(const Board &b); // declared in SearchNextMove.cpp
   if (board.halfmove_clock >= 100 || isInsufficientMaterial(board))
   {
@@ -120,8 +123,23 @@ int qsearch(Board &board, int alpha, int beta, int ply, EvalFn evalFn)
     return 0;
   }
 
-  const Side sideToMove = static_cast<Side>(board.side);
-  const bool inCheck = isInCheck(board, sideToMove);
+  // Generate moves: evasions if in check; otherwise only explore captures.
+  MoveList moves;
+  validMoveGeneration(board, sideToMove, moves, /*captureOnly=*/inCheck ? false : true);
+
+  // No moves: either checkmate or capture-less position
+  if (moves.empty()) {
+    if (inCheck) {
+      // Side to move is checkmated; encode distance-to-mate.
+      int result = -(SCORE_MATE - ply);
+      TT.store(key, 0, result, TTFlag::EXACT, Move(), ply);
+      return result;
+    } else {
+      // No captures and not in check: return stand-pat to keep qsearch capture-only
+      int standPatNoMoves = evalFn(board);
+      return standPatNoMoves;
+    }
+  }
 
   // Stand-pat evaluation (side-to-move perspective)
   int standPat = evalFn(board);
@@ -141,10 +159,6 @@ int qsearch(Board &board, int alpha, int beta, int ply, EvalFn evalFn)
     }
   }
 
-  // Generate moves: evasions if in check; otherwise only explore captures.
-  MoveList moves;
-  validMoveGeneration(board, sideToMove, moves, /*captureOnly=*/false);
-
   if (!inCheck)
   {
     // Keep captures only; quiets would cause unbounded quiescence.
@@ -157,20 +171,6 @@ int qsearch(Board &board, int alpha, int beta, int ply, EvalFn evalFn)
       }
     }
     moves.count = writeIdx;
-  }
-
-  // No moves: either checkmate or stalemate
-  if (moves.empty()) {
-    int result;
-    if (inCheck) {
-      // Side to move is checkmated; encode distance-to-mate.
-      result = -(SCORE_MATE - ply);
-    } else {
-      // No captures and not in check: stand-pat is the terminal value.
-      result = standPat;
-    }
-    TT.store(key, 0, result, TTFlag::EXACT, Move(), ply);
-    return result;
   }
 
   // Simple hash move ordering: try TT move first if present

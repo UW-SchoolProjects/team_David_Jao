@@ -96,9 +96,6 @@ See LICENSE file for details.
 #include <cmath>
 #include <climits>
 
-// Sentinel returned when search aborts due to time limit.
-static constexpr int SCORE_TIME_ABORT = 32001;
-
 #ifdef ENGINE_LOGGING
 #include <string>
 #include <iostream>
@@ -618,18 +615,7 @@ int search(Board &board,
   pvLength[ply] = 0;
 
   // --- Depth / leaf handling ---
-  // 50-move rule or insufficient material → draw
-  if (board.halfmove_clock >= 100 || isInsufficientMaterial(board))
-  {
-    TT.store(key, effectiveDepth, 0, TTFlag::EXACT, Move(), ply);
-    return 0;
-  }
-
-  if (effectiveDepth <= 0)
-  {
-    return qsearch(board, alpha, beta, ply, evalFn);
-  }
-
+  // Handle terminal no-move cases first (checkmate/stalemate)
   if (moves.empty())
   {
     if (inCheck)
@@ -647,6 +633,18 @@ int search(Board &board,
       TT.store(key, effectiveDepth, 0, TTFlag::EXACT, Move(), ply);
       return 0;
     }
+  }
+
+  // Rule-based draws (50-move / insufficient material)
+  if (board.halfmove_clock >= 100 || isInsufficientMaterial(board))
+  {
+    TT.store(key, effectiveDepth, 0, TTFlag::EXACT, Move(), ply);
+    return 0;
+  }
+
+  if (effectiveDepth <= 0)
+  {
+    return qsearch(board, alpha, beta, ply, evalFn);
   }
 
   // --- Null-move pruning ---
@@ -1085,7 +1083,6 @@ Move getBestMove(Board &board, int maxDepth, EvalFn evalFn, const TimeBudget *ti
   {
     int alpha, beta;
     int score;
-    auto depth_start = std::chrono::steady_clock::now();
 
     if (depth == 1)
     {
@@ -1141,7 +1138,7 @@ Move getBestMove(Board &board, int maxDepth, EvalFn evalFn, const TimeBudget *ti
 
 #ifdef ENGINE_LOGGING
       auto depth_end = std::chrono::steady_clock::now();
-      auto depth_elapsed_ms_raw = std::chrono::duration_cast<std::chrono::milliseconds>(depth_end - depth_start).count();
+      auto depth_elapsed_ms_raw = std::chrono::duration_cast<std::chrono::milliseconds>(depth_end - g_search_start).count();
       long long depth_elapsed_ms = depth_elapsed_ms_raw < 0 ? 0LL : depth_elapsed_ms_raw;
       int pv_unstable = (g_soft_overrun_ms > 0) ? 1 : 0;
       int logged_score = (score == SCORE_TIME_ABORT || !havePV) ? lastCompletedPVScore : score;

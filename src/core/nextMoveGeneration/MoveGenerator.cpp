@@ -546,10 +546,12 @@ bool isInCheck(const Board &board, Side side)
 {
   // 1. Locate our king (as a bitboard and as a 0..63 index)
   U64 myKing = bb_of(board, side == WHITE ? WKING : BKING);
-  assert(myKing != 0);
+#ifndef NDEBUG
+  assert(myKing != 0 && "King bitboard missing; invalid board state");
+#endif
   if (myKing == 0) {
-    // Defensive fallback in non-assert builds to avoid UB.
-    return false;
+    // Defensive fallback in non-assert builds: treat as in check to force evasions/termination.
+    return true;
   }
 
   int kingSq = lsb_index(myKing); // 0..63 index

@@ -327,6 +327,10 @@ int basicEvaluate(const Board &board)
 
   int whiteBishops = 0;
   int blackBishops = 0;
+  int whiteKingSq = -1;
+  int blackKingSq = -1;
+  int whiteQueenSq = -1;
+  int blackQueenSq = -1;
 
   int phase = 0; // 0..PHASE_TOTAL
 
@@ -365,6 +369,10 @@ int basicEvaluate(const Board &board)
       egScore += egVal;
       if (pt == BISHOP)
         ++whiteBishops;
+      if (pt == KING)
+        whiteKingSq = sq64;
+      if (pt == QUEEN && whiteQueenSq == -1)
+        whiteQueenSq = sq64;
     }
     else
     {
@@ -372,6 +380,10 @@ int basicEvaluate(const Board &board)
       egScore -= egVal;
       if (pt == BISHOP)
         ++blackBishops;
+      if (pt == KING)
+        blackKingSq = sq64;
+      if (pt == QUEEN && blackQueenSq == -1)
+        blackQueenSq = sq64;
     }
   }
 
@@ -409,10 +421,155 @@ int basicEvaluate(const Board &board)
   else
     scoreWhite -= TEMPO_BONUS;
 
+  // --- Endgame helpers for lone-king defense ---
+  auto edge_distance_score = [](int sq64) {
+    int file = sq64 & 7;
+    int rank = sq64 >> 3;
+    int distFile = std::max(file, 7 - file);
+    int distRank = std::max(rank, 7 - rank);
+    return std::max(distFile, distRank); // 0..7 (higher = closer to edge/corner)
+  };
+  auto king_manhattan = [](int a, int b) {
+    int af = a & 7, ar = a >> 3;
+    int bf = b & 7, br = b >> 3;
+    return std::abs(af - bf) + std::abs(ar - br);
+  };
+
+  auto no_side_pawns_pieces = [&](Side s) {
+    int idx = static_cast<int>(s) << 3;
+    return popcount(bb_of(board, idx | PAWN)) == 0 &&
+           popcount(bb_of(board, idx | KNIGHT)) == 0 &&
+           popcount(bb_of(board, idx | BISHOP)) == 0 &&
+           popcount(bb_of(board, idx | ROOK)) == 0 &&
+           popcount(bb_of(board, idx | QUEEN)) == 0;
+  };
+
+  auto side_has_mating_material = [&](Side s) {
+    int idx = static_cast<int>(s) << 3;
+    int pawns   = popcount(bb_of(board, idx | PAWN));
+    int rooks   = popcount(bb_of(board, idx | ROOK));
+    int queens  = popcount(bb_of(board, idx | QUEEN));
+    int bishops = popcount(bb_of(board, idx | BISHOP));
+    int knights = popcount(bb_of(board, idx | KNIGHT));
+    if (queens > 0 || rooks > 0) return true;
+    if (pawns > 0) return true; // promotion potential, also resets 50-move counter
+    if (bishops >= 2) return true;
+    if (bishops == 1 && knights >= 1) return true; // B+N mate
+    return false; // lone minor(s) without pawns cannot force mate
+  };
+
+  auto count_nonking_material = [&](Side s) {
+    int idx = static_cast<int>(s) << 3;
+    return popcount(bb_of(board, idx | PAWN)) +
+           popcount(bb_of(board, idx | KNIGHT)) +
+           popcount(bb_of(board, idx | BISHOP)) +
+           popcount(bb_of(board, idx | ROOK)) +
+           popcount(bb_of(board, idx | QUEEN));
+  };
+
+  // If defending side is bare king and the attacker has mating material, encourage cornering and king proximity.
+  if (whiteKingSq != -1 && blackKingSq != -1) {
+    bool blackBare = no_side_pawns_pieces(BLACK);
+    bool whiteBare = no_side_pawns_pieces(WHITE);
+    int blackNonKing = count_nonking_material(BLACK);
+    int whiteNonKing = count_nonking_material(WHITE);
+
+    if (blackBare && !whiteBare && side_has_mating_material(WHITE)) {
+      int edge = edge_distance_score(blackKingSq);
+      int kingDist = king_manhattan(whiteKingSq, blackKingSq);
+      scoreWhite += edge * 12;
+      scoreWhite += (14 - kingDist) * 4;
+      if (whiteQueenSq != -1) {
+        int qDist = king_manhattan(whiteQueenSq, blackKingSq);
+        scoreWhite += (14 - qDist) * 3;
+      }
+    }
+    if (whiteBare && !blackBare && side_has_mating_material(BLACK)) {
+      int edge = edge_distance_score(whiteKingSq);
+      int kingDist = king_manhattan(whiteKingSq, blackKingSq);
+      scoreWhite -= edge * 12;
+      scoreWhite -= (14 - kingDist) * 4;
+      if (blackQueenSq != -1) {
+        int qDist = king_manhattan(blackQueenSq, whiteKingSq);
+        scoreWhite -= (14 - qDist) * 3;
+      }
+    }
+
+    // Broader mate drive: if defender has at most one non-king piece and no pawns, still drive king + heavy/minor pieces closer.
+    if (side_has_mating_material(WHITE) && popcount(bb_of(board, BPAWN)) == 0 && blackNonKing <= 1) {
+      int edge = edge_distance_score(blackKingSq);
+      int kingDist = king_manhattan(whiteKingSq, blackKingSq);
+      scoreWhite += edge * 10;
+      scoreWhite += (14 - kingDist) * 3;
+      // Encourage nearest attacking piece to approach
+      int bestAttackerDist = 99;
+      uint64_t attackers = bb_of(board, WQUEEN) | bb_of(board, WROOK) | bb_of(board, WBISHOP) | bb_of(board, WKNIGHT);
+      while (attackers) {
+        uint64_t lsb = attackers & -attackers;
+        int sq = __builtin_ctzll(lsb);
+        attackers ^= lsb;
+        int d = king_manhattan(sq, blackKingSq);
+        if (d < bestAttackerDist) bestAttackerDist = d;
+      }
+      if (bestAttackerDist != 99) {
+        scoreWhite += (14 - bestAttackerDist) * 2;
+      }
+    }
+    if (side_has_mating_material(BLACK) && popcount(bb_of(board, WPAWN)) == 0 && whiteNonKing <= 1) {
+      int edge = edge_distance_score(whiteKingSq);
+      int kingDist = king_manhattan(whiteKingSq, blackKingSq);
+      scoreWhite -= edge * 10;
+      scoreWhite -= (14 - kingDist) * 3;
+      int bestAttackerDist = 99;
+      uint64_t attackers = bb_of(board, BQUEEN) | bb_of(board, BROOK) | bb_of(board, BBISHOP) | bb_of(board, BKNIGHT);
+      while (attackers) {
+        uint64_t lsb = attackers & -attackers;
+        int sq = __builtin_ctzll(lsb);
+        attackers ^= lsb;
+        int d = king_manhattan(sq, whiteKingSq);
+        if (d < bestAttackerDist) bestAttackerDist = d;
+      }
+      if (bestAttackerDist != 99) {
+        scoreWhite -= (14 - bestAttackerDist) * 2;
+      }
+    }
+  }
+
+  // Encourage advancing pawns toward promotion (White POV).
+  {
+    uint64_t wp = bb_of(board, WPAWN);
+    while (wp) {
+      uint64_t lsb = wp & -wp;
+      int sq = __builtin_ctzll(lsb);
+      wp ^= lsb;
+      int rank = sq >> 3;
+      scoreWhite += rank * 2; // small bonus per rank advanced
+    }
+    uint64_t bp = bb_of(board, BPAWN);
+    while (bp) {
+      uint64_t lsb = bp & -bp;
+      int sq = __builtin_ctzll(lsb);
+      bp ^= lsb;
+      int rankFromWhite = 7 - (sq >> 3);
+      scoreWhite -= rankFromWhite * 2;
+    }
+  }
+
+  // --- 50-move proximity penalty (apply in side-to-move POV) ---
+  int sideToMovePenalty = 0;
+  {
+    int hm = board.halfmove_clock;
+    if (hm > 60)
+    {
+      sideToMovePenalty = (hm - 60) * 3; // 3 cp per ply after 60
+    }
+  }
+
   // Convert from White POV to side-to-move POV:
   // Positive = good for side to move.
-  if (board.side == WHITE)
-    return scoreWhite;
-  else
-    return -scoreWhite;
+  int stmScore = (board.side == WHITE) ? scoreWhite : -scoreWhite;
+
+  // Penalize side to move equally in either case
+  stmScore -= sideToMovePenalty;
+  return stmScore;
 }
