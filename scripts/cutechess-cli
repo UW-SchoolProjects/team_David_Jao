@@ -11,24 +11,29 @@ while [ -h "$_src" ]; do
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 BIN="$ROOT/squashfs-root/usr/bin/cutechess-cli"
-LIB1="$ROOT/squashfs-root/usr/lib"
-LIB2="$ROOT/squashfs-root/usr/lib/x86_64-linux-gnu"
 
 if [[ ! -x "$BIN" ]]; then
   echo "Error: cutechess-cli binary not found at $BIN" >&2
   exit 1
 fi
-if [[ ! -d "$LIB1" ]] || [[ ! -d "$LIB2" ]]; then
-  echo "Error: Required Qt library directories not found under $ROOT/squashfs-root" >&2
-  exit 1
+
+# Try to locate a Qt6 core library inside the extracted AppImage.
+QT_CORE_LIB=$(find "$ROOT/squashfs-root" -maxdepth 8 -type f -name 'libQt6Core.so*' 2>/dev/null | head -n 1 || true)
+
+if [[ -z "${QT_CORE_LIB:-}" ]]; then
+  echo "Warning: Could not find libQt6Core.so* under $ROOT/squashfs-root; running without custom LD_LIBRARY_PATH." >&2
+  exec "$BIN" "$@"
 fi
 
-# Build a local LD_LIBRARY_PATH without polluting the environment
-NEW_LD_PATH="$LIB1:$LIB2"
+QT_LIB_DIR="$(dirname "$QT_CORE_LIB")"
+
+# Build a new LD_LIBRARY_PATH that prefers the AppImage libs.
 if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
-  case ":$LD_LIBRARY_PATH:" in *":$LIB1:"*) : ;; *) NEW_LD_PATH="$NEW_LD_PATH:$LD_LIBRARY_PATH" ;; esac
-  case ":$LD_LIBRARY_PATH:" in *":$LIB2:"*) : ;; *) : ;; esac
+  export LD_LIBRARY_PATH="$QT_LIB_DIR:$LD_LIBRARY_PATH"
+else
+  export LD_LIBRARY_PATH="$QT_LIB_DIR"
 fi
 
-exec env LD_LIBRARY_PATH="$NEW_LD_PATH" "$BIN" "$@"
+exec "$BIN" "$@"
