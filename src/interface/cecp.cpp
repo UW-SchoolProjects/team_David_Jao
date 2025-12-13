@@ -515,7 +515,14 @@ static void handle_level(EngineSession &sess,
 }
 
 static void handle_st(EngineSession &sess, int seconds) {
+    if (seconds < 0) seconds = 0;
     sess.time_per_move_ms = seconds * 1000;
+}
+
+// Fixed time-per-move in milliseconds (custom helper for sampling harnesses).
+static void handle_st_ms(EngineSession &sess, int ms) {
+    if (ms < 0) ms = 0;
+    sess.time_per_move_ms = ms;
 }
 
 static void handle_sd(EngineSession &sess, int depth) {
@@ -637,6 +644,10 @@ void cecp_main_loop(EngineSession &sess) {
             int seconds = 0; iss >> seconds;
             handle_st(sess, seconds);
         }
+        else if (cmd == "stms") {
+            int ms = 0; iss >> ms;
+            handle_st_ms(sess, ms);
+        }
         else if (cmd == "sd") {
             int depth = 0; iss >> depth;
             handle_sd(sess, depth);
@@ -644,6 +655,25 @@ void cecp_main_loop(EngineSession &sess) {
         else if (cmd == "ping") {
             int id; iss >> id;
             handle_ping(sess, id);
+        }
+        else if (cmd == "david_fen") {
+            std::cout << "fen " << dump_fen(sess.board) << "\n";
+        }
+        else if (cmd == "david_lastscore") {
+            if (sess.has_root_score) {
+                std::cout << "lastscore " << sess.last_root_score << "\n";
+            } else {
+                std::cout << "lastscore none\n";
+            }
+        }
+        else if (cmd == "david_moves") {
+            MoveList moves;
+            generate_variant_moves(sess.board, moves);
+            std::cout << "moves";
+            for (int i = 0; i < moves.count; ++i) {
+                std::cout << ' ' << move_to_uci(moves.moves[i]);
+            }
+            std::cout << "\n";
         }
         else if (cmd == "result") {
             handle_result(sess, line);
