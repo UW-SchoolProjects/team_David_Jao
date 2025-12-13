@@ -124,7 +124,7 @@ def start_engine(cmd: str, extra_env: Optional[dict] = None) -> subprocess.Popen
     env = os.environ.copy()
     if extra_env:
         env.update(extra_env)
-    return subprocess.Popen(
+    proc = subprocess.Popen(
         shlex.split(cmd),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -135,6 +135,14 @@ def start_engine(cmd: str, extra_env: Optional[dict] = None) -> subprocess.Popen
         bufsize=0,
         env=env,
     )
+    try:
+        import fcntl
+
+        flags = fcntl.fcntl(proc.stdout.fileno(), fcntl.F_GETFL)
+        fcntl.fcntl(proc.stdout.fileno(), fcntl.F_SETFL, flags | os.O_NONBLOCK)
+    except Exception:
+        pass
+    return proc
 
 
 def handshake(proc: subprocess.Popen, args) -> bool:
@@ -158,7 +166,11 @@ def request_fen(proc: subprocess.Popen) -> Optional[str]:
     line = query_prefix(proc, "david_fen", "fen ")
     if line is None:
         return None
-    return line[len("fen ") :].strip()
+    fen = line[len("fen ") :].strip()
+    parts = fen.split()
+    if len(parts) < 6:
+        return None
+    return fen
 
 
 def request_lastscore(proc: subprocess.Popen) -> Optional[int]:
@@ -166,13 +178,26 @@ def request_lastscore(proc: subprocess.Popen) -> Optional[int]:
     if line is None:
         return None
     payload = line[len("lastscore ") :].strip()
-    if payload == "none" or not payload:
+    if not payload:
         return None
-    try:
-        val = int(payload)
-    except ValueError:
+    lower = payload.lower()
+    if lower == "none":
         return None
-    if val < -30000 or val > 30000:
+    parts = lower.split()
+    val: Optional[int] = None
+    if parts[0] == "mate" and len(parts) >= 2:
+        try:
+            sign = -1 if parts[1].startswith("-") else 1
+            val = sign * 30000
+        except ValueError:
+            return None
+    else:
+        try:
+            cleaned = parts[0].lstrip("+")
+            val = int(cleaned)
+        except ValueError:
+            return None
+    if val is None or val < -30000 or val > 30000:
         return None
     return val
 
