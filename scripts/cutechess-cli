@@ -2,7 +2,15 @@
 # Wrapper to run cutechess-cli with the AppImage-bundled Qt libraries.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Resolve script directory robustly (handles symlinks)
+_src="${BASH_SOURCE[0]}"
+while [ -h "$_src" ]; do
+  _dir="$(cd -P "$(dirname "$_src")" && pwd)"
+  _src="$(readlink "$_src")"
+  [[ "$_src" != /* ]] && _src="$_dir/$_src"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BIN="$ROOT/squashfs-root/usr/bin/cutechess-cli"
 LIB1="$ROOT/squashfs-root/usr/lib"
 LIB2="$ROOT/squashfs-root/usr/lib/x86_64-linux-gnu"

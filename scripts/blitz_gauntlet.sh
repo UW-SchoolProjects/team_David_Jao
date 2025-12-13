@@ -18,6 +18,11 @@ SUMMARY_FILE="$LOG_DIR/blitz_gauntlet.summary"
 ENG_NEW_STDERR="$LOG_DIR/engine_new.stderr"
 ENG_OLD_STDERR="$LOG_DIR/engine_old.stderr"
 
+# Prefer repo-provided cutechess wrapper if available
+if [ -x "$(dirname "$0")/cutechess-cli" ]; then
+  PATH="$(dirname "$0"):$PATH"
+fi
+
 if ! command -v cutechess-cli >/dev/null 2>&1; then
   echo "cutechess-cli not found in PATH" >&2
   exit 1
@@ -28,6 +33,9 @@ if [ "${APPEND_LOG:-0}" -eq 1 ]; then
   LOG_FILE="$LOG_DIR/blitz_gauntlet.$ts.log"
   PGN_FILE="$LOG_DIR/blitz_gauntlet.$ts.pgn"
   SUMMARY_FILE="$LOG_DIR/blitz_gauntlet.$ts.summary"
+  : >"$LOG_FILE"
+  : >"$PGN_FILE"
+  : >"$SUMMARY_FILE"
   echo "Running blitz gauntlet: $ENGINE_NEW vs $ENGINE_OLD" | tee -a "$LOG_FILE"
 else
   : >"$LOG_FILE"
