@@ -139,9 +139,8 @@ int qsearch(Board &board, int alpha, int beta, int ply, EvalFn evalFn)
       MoveList allMoves;
       validMoveGeneration(board, sideToMove, allMoves, /*captureOnly=*/false);
       if (allMoves.empty()) {
-        int result = 0; // true stalemate
-        TT.store(key, 0, result, TTFlag::EXACT, Move(), ply);
-        return result;
+        // True stalemate: avoid storing exact at qsearch nodes to prevent TT poisoning.
+        return 0;
       }
       // Quiet moves exist: proceed (stand-pat path below)
     }

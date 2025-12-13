@@ -103,7 +103,7 @@ bool isInsufficientMaterial(const Board &b);
 int static_exchange_eval(const Board &board, const Move &m);
 
 // Sentinel used when search aborts due to time constraints.
-// Choose a value outside the normal scoring domain to avoid collisions.
-inline constexpr int SCORE_TIME_ABORT = std::numeric_limits<int>::max();
+// Keep sufficiently large but safe for arithmetic (negation, +/- ply).
+inline constexpr int SCORE_TIME_ABORT = 32001;
 
 #endif
