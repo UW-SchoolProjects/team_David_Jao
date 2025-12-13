@@ -91,8 +91,10 @@ See LICENSE file for details.
 #include "../nextMoveGeneration/MoveGenerator.h"
 #include "eval.h"
 #include "SearchConfig.h"
+#include "TimeManager.h"
 
-Move getBestMove(Board &board, int maxDepth, EvalFn evalFn);
+// Optional: pass a TimeBudget and receive the final root score.
+Move getBestMove(Board &board, int maxDepth, EvalFn evalFn, const TimeBudget *timeBudget = nullptr, int *outRootScore = nullptr);
 
 // Utility exposed for draw detection (50-move / insufficient material).
 bool isInsufficientMaterial(const Board &b);

@@ -101,6 +101,7 @@ See LICENSE file for details.
 #include "../core/gameTreeSearch/TranspositionTable.h"
 #include "../core/gameTreeSearch/SearchNextMove.h"
 #include "../core/gameTreeSearch/eval.h"
+#include "../core/gameTreeSearch/TimeManager.h"
 #include "../core/board/board.h"
 
 #include <string> // Required for std::to_string()
@@ -181,6 +182,29 @@ static int parse_time_token_ms(const std::string &tok) {
 
 static int clamp_non_negative(long long v) {
     return v <= 0 ? 0 : static_cast<int>(v);
+}
+
+static void gather_root_context(const Board &b, bool &in_check, bool &capture_heavy) {
+    Side side = static_cast<Side>(b.side);
+    in_check = isInCheck(b, side);
+
+    MoveList moves;
+    Board bcopy = b;
+    validMoveGeneration(bcopy, side, moves, /*captureOnly=*/false);
+    if (moves.count == 0) {
+        capture_heavy = false;
+        return;
+    }
+    int captures = 0;
+    for (int i = 0; i < moves.count; ++i) {
+        if (moves.moves[i].isCapture()) {
+            ++captures;
+        }
+    }
+    // Capture-heavy: captures dominate a reasonably large move set.
+    const bool many_moves = moves.count >= 6;
+    const bool capture_dominant = (captures > 0) && (captures * 2 >= moves.count);
+    capture_heavy = many_moves && capture_dominant;
 }
 
 void apply_my_move_elapsed(EngineSession &sess, int elapsed_ms, std::chrono::steady_clock::time_point now_ts) {
@@ -274,7 +298,23 @@ static Move search_best_move(EngineSession &sess) {
     // Depth can be tuned; 'sd' overrides the default when provided.
     int searchDepth = sess.max_depth > 0 ? sess.max_depth : 8;
     log_msg("search_best_move: starting search depth " + std::to_string(searchDepth));
-    Move best = getBestMove(sess.board, searchDepth, basicEvaluate);
+    bool in_check = false;
+    bool capture_heavy = false;
+    gather_root_context(sess.board, in_check, capture_heavy);
+
+    int remaining = sess.my_time_ms > 0 ? sess.my_time_ms : 50;
+    int moves_left = sess.moves_per_session > 0 ? sess.moves_per_session : 30;
+    TimeBudget budget = compute_time_budget(remaining,
+                                            sess.increment_ms,
+                                            sess.time_per_move_ms,
+                                            moves_left,
+                                            in_check,
+                                            capture_heavy);
+
+    int rootScore = 0;
+    Move best = getBestMove(sess.board, searchDepth, basicEvaluate, &budget, &rootScore);
+    sess.last_root_score = rootScore;
+    sess.has_root_score = true;
     log_msg("search_best_move: search finished");
     return best;
 }
@@ -304,6 +344,8 @@ void init_engine_session(EngineSession &sess) {
     sess.increment_ms      = 0;
     sess.time_per_move_ms  = 0;
     sess.max_depth         = 0;
+    sess.has_root_score    = false;
+    sess.last_root_score   = 0;
     sess.last_my_move_ts   = std::chrono::steady_clock::now();
     sess.last_opp_move_ts  = std::chrono::steady_clock::now();
     sess.last_ping_id      = 0;
@@ -470,6 +512,8 @@ static void handle_result(EngineSession &sess, const std::string&) {
     sess.increment_ms = 0;
     sess.time_per_move_ms = 0;
     sess.max_depth = 0;
+    sess.has_root_score = false;
+    sess.last_root_score = 0;
     auto now = std::chrono::steady_clock::now();
     sess.last_my_move_ts = now;
     sess.last_opp_move_ts = now;
@@ -495,6 +539,8 @@ static void handle_setboard(EngineSession &sess, const std::string &fen) {
     sess.increment_ms      = 0;
     sess.time_per_move_ms  = 0;
     sess.max_depth         = 0;
+    sess.has_root_score    = false;
+    sess.last_root_score   = 0;
     auto now = std::chrono::steady_clock::now();
     sess.last_my_move_ts   = now;
     sess.last_opp_move_ts  = now;
