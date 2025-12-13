@@ -329,6 +329,8 @@ int basicEvaluate(const Board &board)
   int blackBishops = 0;
   int whiteKingSq = -1;
   int blackKingSq = -1;
+  int whiteQueenSq = -1;
+  int blackQueenSq = -1;
 
   int phase = 0; // 0..PHASE_TOTAL
 
@@ -369,6 +371,8 @@ int basicEvaluate(const Board &board)
         ++whiteBishops;
       if (pt == KING)
         whiteKingSq = sq64;
+      if (pt == QUEEN && whiteQueenSq == -1)
+        whiteQueenSq = sq64;
     }
     else
     {
@@ -378,6 +382,8 @@ int basicEvaluate(const Board &board)
         ++blackBishops;
       if (pt == KING)
         blackKingSq = sq64;
+      if (pt == QUEEN && blackQueenSq == -1)
+        blackQueenSq = sq64;
     }
   }
 
@@ -452,22 +458,80 @@ int basicEvaluate(const Board &board)
     return false; // lone minor(s) without pawns cannot force mate
   };
 
+  auto count_nonking_material = [&](Side s) {
+    int idx = static_cast<int>(s) << 3;
+    return popcount(bb_of(board, idx | PAWN)) +
+           popcount(bb_of(board, idx | KNIGHT)) +
+           popcount(bb_of(board, idx | BISHOP)) +
+           popcount(bb_of(board, idx | ROOK)) +
+           popcount(bb_of(board, idx | QUEEN));
+  };
+
   // If defending side is bare king and the attacker has mating material, encourage cornering and king proximity.
   if (whiteKingSq != -1 && blackKingSq != -1) {
     bool blackBare = no_side_pawns_pieces(BLACK);
     bool whiteBare = no_side_pawns_pieces(WHITE);
+    int blackNonKing = count_nonking_material(BLACK);
+    int whiteNonKing = count_nonking_material(WHITE);
 
     if (blackBare && !whiteBare && side_has_mating_material(WHITE)) {
       int edge = edge_distance_score(blackKingSq);
       int kingDist = king_manhattan(whiteKingSq, blackKingSq);
       scoreWhite += edge * 12;
       scoreWhite += (14 - kingDist) * 4;
+      if (whiteQueenSq != -1) {
+        int qDist = king_manhattan(whiteQueenSq, blackKingSq);
+        scoreWhite += (14 - qDist) * 3;
+      }
     }
     if (whiteBare && !blackBare && side_has_mating_material(BLACK)) {
       int edge = edge_distance_score(whiteKingSq);
       int kingDist = king_manhattan(whiteKingSq, blackKingSq);
       scoreWhite -= edge * 12;
       scoreWhite -= (14 - kingDist) * 4;
+      if (blackQueenSq != -1) {
+        int qDist = king_manhattan(blackQueenSq, whiteKingSq);
+        scoreWhite -= (14 - qDist) * 3;
+      }
+    }
+
+    // Broader mate drive: if defender has at most one non-king piece and no pawns, still drive king + heavy/minor pieces closer.
+    if (side_has_mating_material(WHITE) && popcount(bb_of(board, BPAWN)) == 0 && blackNonKing <= 1) {
+      int edge = edge_distance_score(blackKingSq);
+      int kingDist = king_manhattan(whiteKingSq, blackKingSq);
+      scoreWhite += edge * 10;
+      scoreWhite += (14 - kingDist) * 3;
+      // Encourage nearest attacking piece to approach
+      int bestAttackerDist = 99;
+      uint64_t attackers = bb_of(board, WQUEEN) | bb_of(board, WROOK) | bb_of(board, WBISHOP) | bb_of(board, WKNIGHT);
+      while (attackers) {
+        uint64_t lsb = attackers & -attackers;
+        int sq = __builtin_ctzll(lsb);
+        attackers ^= lsb;
+        int d = king_manhattan(sq, blackKingSq);
+        if (d < bestAttackerDist) bestAttackerDist = d;
+      }
+      if (bestAttackerDist != 99) {
+        scoreWhite += (14 - bestAttackerDist) * 2;
+      }
+    }
+    if (side_has_mating_material(BLACK) && popcount(bb_of(board, WPAWN)) == 0 && whiteNonKing <= 1) {
+      int edge = edge_distance_score(whiteKingSq);
+      int kingDist = king_manhattan(whiteKingSq, blackKingSq);
+      scoreWhite -= edge * 10;
+      scoreWhite -= (14 - kingDist) * 3;
+      int bestAttackerDist = 99;
+      uint64_t attackers = bb_of(board, BQUEEN) | bb_of(board, BROOK) | bb_of(board, BBISHOP) | bb_of(board, BKNIGHT);
+      while (attackers) {
+        uint64_t lsb = attackers & -attackers;
+        int sq = __builtin_ctzll(lsb);
+        attackers ^= lsb;
+        int d = king_manhattan(sq, whiteKingSq);
+        if (d < bestAttackerDist) bestAttackerDist = d;
+      }
+      if (bestAttackerDist != 99) {
+        scoreWhite -= (14 - bestAttackerDist) * 2;
+      }
     }
   }
 
@@ -497,9 +561,9 @@ int basicEvaluate(const Board &board)
   {
     int hm = board.halfmove_clock;
     int penalty = 0;
-    if (hm > 70)
+    if (hm > 60)
     {
-      penalty = (hm - 70) * 2; // 2 cp per ply after 70
+      penalty = (hm - 60) * 3; // 3 cp per ply after 60
     }
     scoreWhite -= penalty;
   }
