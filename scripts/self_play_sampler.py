@@ -34,17 +34,26 @@ def send(proc: subprocess.Popen, cmd: str) -> bool:
 def read_until(proc: subprocess.Popen, timeout: float, predicate: Callable[[str], bool]) -> Optional[str]:
     end = time.time() + timeout
     while time.time() < end:
-        remaining = end - time.time()
+        remaining = max(0.0, end - time.time())
+        if proc.poll() is not None:
+            return None
         try:
             ready, _, _ = select.select([proc.stdout], [], [], remaining)
-            if proc.stdout in ready:
-                line = proc.stdout.readline()
-            else:
-                continue
         except (ValueError, OSError):
             return None
-        if line == "":
+        if not ready:
+            continue
+        try:
+            line = proc.stdout.readline()
+        except Exception:
             return None
+        if not line:
+            return None
+        if isinstance(line, bytes):
+            try:
+                line = line.decode(errors="ignore")
+            except Exception:
+                return None
         line = line.strip()
         if not line:
             continue
@@ -90,7 +99,9 @@ def nonking_material(fen: str) -> int:
 def drain(proc: subprocess.Popen, timeout: float = 0.05) -> None:
     end = time.time() + timeout
     while time.time() < end:
-        remaining = end - time.time()
+        remaining = max(0.0, end - time.time())
+        if proc.poll() is not None:
+            return
         try:
             ready, _, _ = select.select([proc.stdout], [], [], remaining)
         except (ValueError, OSError):
@@ -115,7 +126,9 @@ def start_engine(cmd: str, extra_env: Optional[dict] = None) -> subprocess.Popen
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         text=True,
-        bufsize=1,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=0,
         env=env,
     )
 

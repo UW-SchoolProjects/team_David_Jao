@@ -461,9 +461,9 @@ static void handle_go(EngineSession &sess) {
 }
 
 static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
-    log_msg("usermove " + mvStr);
-    Move m;
-    if (!parse_uci_move(sess.board, mvStr, m)) {
+  log_msg("usermove " + mvStr);
+  Move m;
+  if (!parse_uci_move(sess.board, mvStr, m)) {
         log_msg("usermove rejected: not found in legal list");
         std::cout << "Illegal move: " << mvStr << "\n";
         return;
@@ -471,9 +471,9 @@ static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
     log_msg("parsed uci move " + std::to_string(m.from()) + std::to_string(m.to()));
     bool ok = make_move(sess.board, m);
     if (!ok) {
-        log_msg("usermove rejected: make_move failed");
-        std::cout << "Illegal move: " << mvStr << "\n";
-        return;
+      log_msg("usermove rejected: make_move failed");
+      std::cout << "Illegal move: " << mvStr << "\n";
+      return;
     }
 
     sess.has_root_score = false; // invalidate stale eval for new position
@@ -481,6 +481,13 @@ static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
     log_board_fen(sess.board, "After usermove");
     // Opponent just moved; record their move end (our clock starts now).
     sess.last_opp_move_ts = std::chrono::steady_clock::now();
+
+    MoveList moves;
+    generate_variant_moves(sess.board, moves);
+    if (moves.count == 0) {
+        log_msg("no legal replies after usermove; skipping engine move");
+        return;
+    }
 
     log_msg(sess.mode == EngineMode::PLAYING ? "play is on" : "play not on");
     if (sess.mode == EngineMode::PLAYING && sess.board.side == sess.engine_side) {
@@ -664,6 +671,7 @@ void cecp_main_loop(EngineSession &sess) {
         }
         else if (cmd == "david_fen") {
             std::cout << "fen " << dump_fen(sess.board) << "\n";
+            std::cout.flush();
         }
         else if (cmd == "david_lastscore") {
             if (sess.has_root_score) {
@@ -671,19 +679,26 @@ void cecp_main_loop(EngineSession &sess) {
             } else {
                 std::cout << "lastscore none\n";
             }
+            std::cout.flush();
         }
         else if (cmd == "david_moves") {
             MoveList moves;
             generate_variant_moves(sess.board, moves);
             std::cout << "moves";
-            for (int i = 0; i < moves.count; ++i) {
-                const Move &m = moves.moves[i];
-                if (make_move(sess.board, m)) {
-                    unmake_move(sess.board);
-                    std::cout << ' ' << move_to_uci(m);
+            Board tmp = sess.board;
+            try {
+                for (int i = 0; i < moves.count; ++i) {
+                    const Move &m = moves.moves[i];
+                    if (make_move(tmp, m)) {
+                        unmake_move(tmp);
+                        std::cout << ' ' << move_to_uci(m);
+                    }
                 }
+            } catch (...) {
+                // Continue so client still receives 'moves' line.
             }
             std::cout << "\n";
+            std::cout.flush();
         }
         else if (cmd == "result") {
             handle_result(sess, line);
