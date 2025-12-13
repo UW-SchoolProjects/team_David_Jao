@@ -47,13 +47,17 @@ def read_until(proc: subprocess.Popen, timeout: float, predicate: Callable[[str]
             line = proc.stdout.readline()
         except Exception:
             return None
-        if not line:
-            return None
+        if line is None:
+            continue
+        if line == "":
+            if proc.poll() is not None:
+                return None
+            continue
         if isinstance(line, bytes):
             try:
                 line = line.decode(errors="ignore")
             except Exception:
-                return None
+                continue
         line = line.strip()
         if not line:
             continue
@@ -162,12 +166,15 @@ def request_lastscore(proc: subprocess.Popen) -> Optional[int]:
     if line is None:
         return None
     payload = line[len("lastscore ") :].strip()
-    if payload == "none":
+    if payload == "none" or not payload:
         return None
     try:
-        return int(payload)
+        val = int(payload)
     except ValueError:
         return None
+    if val < -30000 or val > 30000:
+        return None
+    return val
 
 
 def list_moves(proc: subprocess.Popen) -> List[str]:

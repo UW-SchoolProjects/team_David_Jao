@@ -686,16 +686,13 @@ void cecp_main_loop(EngineSession &sess) {
             generate_variant_moves(sess.board, moves);
             std::cout << "moves";
             Board tmp = sess.board;
-            try {
-                for (int i = 0; i < moves.count; ++i) {
-                    const Move &m = moves.moves[i];
-                    if (make_move(tmp, m)) {
-                        unmake_move(tmp);
-                        std::cout << ' ' << move_to_uci(m);
-                    }
+            for (int i = 0; i < moves.count; ++i) {
+                const Move &m = moves.moves[i];
+                if (!make_move(tmp, m)) {
+                    continue;
                 }
-            } catch (...) {
-                // Continue so client still receives 'moves' line.
+                unmake_move(tmp);
+                std::cout << ' ' << move_to_uci(m);
             }
             std::cout << "\n";
             std::cout.flush();
