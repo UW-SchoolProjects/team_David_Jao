@@ -23,17 +23,36 @@ if ! command -v cutechess-cli >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "Running blitz gauntlet: $ENGINE_NEW vs $ENGINE_OLD" | tee "$LOG_FILE"
+if [ "${APPEND_LOG:-0}" -eq 1 ]; then
+  echo "Running blitz gauntlet: $ENGINE_NEW vs $ENGINE_OLD" | tee -a "$LOG_FILE"
+else
+  : >"$LOG_FILE"
+  : >"$PGN_FILE"
+  : >"$SUMMARY_FILE"
+  echo "Running blitz gauntlet: $ENGINE_NEW vs $ENGINE_OLD" | tee -a "$LOG_FILE"
+fi
+
+# Validate engine executables
+if [ ! -x "$ENGINE_NEW" ]; then
+  echo "ERROR: ENGINE_NEW not executable: $ENGINE_NEW" | tee -a "$LOG_FILE"
+  exit 1
+fi
+if [ ! -x "$ENGINE_OLD" ]; then
+  echo "ERROR: ENGINE_OLD not executable: $ENGINE_OLD" | tee -a "$LOG_FILE"
+  exit 1
+fi
 
 # Wrap engines to capture stderr metrics if LOG_METRICS=1
 ENGINE_NEW_CMD="$ENGINE_NEW"
 ENGINE_OLD_CMD="$ENGINE_OLD"
 if [ "${LOG_METRICS:-0}" -eq 1 ]; then
-  ENGINE_NEW_CMD="bash -lc '$ENGINE_NEW 2>>\"$ENG_NEW_STDERR\"'"
-  ENGINE_OLD_CMD="bash -lc '$ENGINE_OLD 2>>\"$ENG_OLD_STDERR\"'"
-  rm -f "$ENG_NEW_STDERR" "$ENG_OLD_STDERR"
+  : >"$ENG_NEW_STDERR"
+  : >"$ENG_OLD_STDERR"
+  ENGINE_NEW_CMD="$ENGINE_NEW 2>>\"$ENG_NEW_STDERR\""
+  ENGINE_OLD_CMD="$ENGINE_OLD 2>>\"$ENG_OLD_STDERR\""
 fi
 
+RUN_LOG="$(mktemp)"
 cutechess-cli \
   -engine cmd="$ENGINE_NEW_CMD" proto=xboard \
   -engine cmd="$ENGINE_OLD_CMD" proto=xboard \
@@ -43,12 +62,19 @@ cutechess-cli \
   -pgnout "$PGN_FILE" \
   -repeat \
   -recover \
-  | tee -a "$LOG_FILE"
+  | tee -a "$LOG_FILE" | tee "$RUN_LOG"
+status=${PIPESTATUS[0]}
+if [ "$status" -ne 0 ]; then
+  echo "ERROR: cutechess-cli exited with status $status" | tee -a "$LOG_FILE"
+  rm -f "$RUN_LOG"
+  exit "$status"
+fi
 
 echo "--- Summary ---" | tee -a "$LOG_FILE"
 
-# Count time forfeits (flagged losses) in the log output.
-FLAG_LOSSES=$(grep -Ei "forfeit|on time" "$LOG_FILE" | wc -l | awk '{print $1}')
+# Count time forfeits (flagged losses) only in this run's output.
+FLAG_LOSSES=$(grep -Ei "forfeit|on time" "$RUN_LOG" | wc -l | awk '{print $1}')
+rm -f "$RUN_LOG"
 echo "Flagged losses: $FLAG_LOSSES" | tee -a "$LOG_FILE"
 
 if [ "$FLAG_LOSSES" -gt 0 ]; then
