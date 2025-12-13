@@ -164,7 +164,6 @@ bool make_move(Board &b, const Move &m) {
     } else {
         new_halfmove_clock += 1;
     }
-    zobrist_update_rule50(b, st.old_halfmove_clock, new_halfmove_clock);
     b.halfmove_clock = new_halfmove_clock;
 
     if (b.side == BLACK) {
@@ -364,7 +363,6 @@ bool make_null(Board &b, NullUndo &u) {
     }
     b.ep_square = NO_SQUARE;
     int new_halfmove_clock = u.old_halfmove_clock + 1;
-    zobrist_update_rule50(b, u.old_halfmove_clock, new_halfmove_clock);
     b.halfmove_clock = new_halfmove_clock;
     if (b.side == BLACK) {
         b.fullmove_number += 1;

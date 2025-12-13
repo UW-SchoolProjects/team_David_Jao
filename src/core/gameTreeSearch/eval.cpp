@@ -438,23 +438,56 @@ int basicEvaluate(const Board &board)
            popcount(bb_of(board, idx | QUEEN)) == 0;
   };
 
-  // If defending side is bare king and attacking side has at least a rook/queen, encourage pushing king to edge and bringing our king closer.
+  auto side_has_mating_material = [&](Side s) {
+    int idx = static_cast<int>(s) << 3;
+    int pawns   = popcount(bb_of(board, idx | PAWN));
+    int rooks   = popcount(bb_of(board, idx | ROOK));
+    int queens  = popcount(bb_of(board, idx | QUEEN));
+    int bishops = popcount(bb_of(board, idx | BISHOP));
+    int knights = popcount(bb_of(board, idx | KNIGHT));
+    if (queens > 0 || rooks > 0) return true;
+    if (pawns > 0) return true; // promotion potential, also resets 50-move counter
+    if (bishops >= 2) return true;
+    if (bishops == 1 && knights >= 1) return true; // B+N mate
+    return false; // lone minor(s) without pawns cannot force mate
+  };
+
+  // If defending side is bare king and the attacker has mating material, encourage cornering and king proximity.
   if (whiteKingSq != -1 && blackKingSq != -1) {
     bool blackBare = no_side_pawns_pieces(BLACK);
     bool whiteBare = no_side_pawns_pieces(WHITE);
 
-    if (blackBare && (bb_of(board, WROOK) || bb_of(board, WQUEEN))) {
+    if (blackBare && !whiteBare && side_has_mating_material(WHITE)) {
       int edge = edge_distance_score(blackKingSq);
       int kingDist = king_manhattan(whiteKingSq, blackKingSq);
-      // Reward cornering (edge up to 7) and proximity (distance up to 14).
       scoreWhite += edge * 12;
       scoreWhite += (14 - kingDist) * 4;
     }
-    if (whiteBare && (bb_of(board, BROOK) || bb_of(board, BQUEEN))) {
+    if (whiteBare && !blackBare && side_has_mating_material(BLACK)) {
       int edge = edge_distance_score(whiteKingSq);
       int kingDist = king_manhattan(whiteKingSq, blackKingSq);
       scoreWhite -= edge * 12;
       scoreWhite -= (14 - kingDist) * 4;
+    }
+  }
+
+  // Encourage advancing pawns toward promotion (White POV).
+  {
+    uint64_t wp = bb_of(board, WPAWN);
+    while (wp) {
+      uint64_t lsb = wp & -wp;
+      int sq = __builtin_ctzll(lsb);
+      wp ^= lsb;
+      int rank = sq >> 3;
+      scoreWhite += rank * 2; // small bonus per rank advanced
+    }
+    uint64_t bp = bb_of(board, BPAWN);
+    while (bp) {
+      uint64_t lsb = bp & -bp;
+      int sq = __builtin_ctzll(lsb);
+      bp ^= lsb;
+      int rankFromWhite = 7 - (sq >> 3);
+      scoreWhite -= rankFromWhite * 2;
     }
   }
 

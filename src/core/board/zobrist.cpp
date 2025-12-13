@@ -97,7 +97,6 @@ uint64_t Z_PIECE_SQ[16][128];
 uint64_t Z_SIDE;
 uint64_t Z_CASTLING[16];
 uint64_t Z_EP_FILE[8];
-uint64_t Z_RULE50[26];
 uint64_t rng_state[2];
 
 void zobrist_init(uint64_t seed) {
@@ -117,8 +116,6 @@ void zobrist_init(uint64_t seed) {
     for (int f = 0; f < 8; ++f)
         Z_EP_FILE[f] = zobrist_rand();
 
-    for (int i = 0; i < 26; ++i)
-        Z_RULE50[i] = zobrist_rand();
 }
 
 uint64_t compute_zobrist(const Board &b) {
@@ -166,8 +163,6 @@ uint64_t compute_zobrist(const Board &b) {
             key ^= Z_EP_FILE[ep_file];
         }
     }
-
-    key ^= Z_RULE50[clamp_rule50_index(b.halfmove_clock)];
 
     return key;
 }
