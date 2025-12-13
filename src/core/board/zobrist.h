@@ -108,6 +108,9 @@ extern uint64_t Z_CASTLING[16];
 // Optional: only include if EP square is capturable.
 extern uint64_t Z_EP_FILE[8];
 
+// Rule-50 halfmove clock keys (index clamped to [0,100]).
+extern uint64_t Z_RULE50[101];
+
 extern uint64_t rng_state[2];
 
 // Initializes all Zobrist keys with pseudo-random 64-bit numbers.
@@ -142,6 +145,21 @@ void zobrist_update_castling_move(Board &b, CastlingType type);
 
 // Updates the Zobrist key after a casling rights or EP file changed
 void zobrist_update_castling_rights_EP_file(Board &b, int old_castling, int old_ep_square, Side old_side, Side new_side);
+
+// Clamp halfmove clock to the hash range and update hash when the clock changes.
+inline int clamp_rule50_index(int halfmove_clock) {
+    if (halfmove_clock < 0) return 0;
+    if (halfmove_clock > 100) return 100;
+    return halfmove_clock;
+}
+
+inline void zobrist_update_rule50(Board &b, int old_halfmove, int new_halfmove) {
+    int oldIdx = clamp_rule50_index(old_halfmove);
+    int newIdx = clamp_rule50_index(new_halfmove);
+    if (oldIdx == newIdx) return;
+    b.zobrist_key ^= Z_RULE50[oldIdx];
+    b.zobrist_key ^= Z_RULE50[newIdx];
+}
 
 inline uint64_t zobrist_rand() {
     uint64_t x = rng_state[0];
