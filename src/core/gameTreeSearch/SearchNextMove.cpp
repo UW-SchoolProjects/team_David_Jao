@@ -94,6 +94,7 @@ See LICENSE file for details.
 #include <unordered_map>
 #include <chrono>
 #include <cmath>
+#include <climits>
 
 // Sentinel returned when search aborts due to time limit.
 static constexpr int SCORE_TIME_ABORT = 32001;
@@ -1084,6 +1085,7 @@ Move getBestMove(Board &board, int maxDepth, EvalFn evalFn, const TimeBudget *ti
   {
     int alpha, beta;
     int score;
+    auto depth_start = std::chrono::steady_clock::now();
 
     if (depth == 1)
     {
@@ -1136,6 +1138,18 @@ Move getBestMove(Board &board, int maxDepth, EvalFn evalFn, const TimeBudget *ti
       havePV = true;
       lastCompletedPVMove = bestMove;
       lastCompletedPVScore = bestScore;
+
+#ifdef ENGINE_LOGGING
+      auto depth_end = std::chrono::steady_clock::now();
+      auto depth_elapsed_ms_raw = std::chrono::duration_cast<std::chrono::milliseconds>(depth_end - depth_start).count();
+      long long depth_elapsed_ms = depth_elapsed_ms_raw < 0 ? 0LL : depth_elapsed_ms_raw;
+      int pv_unstable = (g_soft_overrun_ms > 0) ? 1 : 0;
+      int logged_score = (score == SCORE_TIME_ABORT || !havePV) ? lastCompletedPVScore : score;
+      log_msg("METRIC depth_done depth=" + std::to_string(depth) +
+              " score=" + std::to_string(logged_score) +
+              " elapsed_ms=" + std::to_string(depth_elapsed_ms) +
+              " pv_unstable=" + std::to_string(pv_unstable));
+#endif
 
       // (Optional) You can print or log the PV line here for debugging:
       // std::cout << "info depth " << depth << " score cp " << bestScore << " pv ";
