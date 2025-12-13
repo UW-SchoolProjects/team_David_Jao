@@ -294,6 +294,7 @@ bool parse_uci_move(Board &b,
 }
 
 static Move search_best_move(EngineSession &sess) {
+    auto move_start = std::chrono::steady_clock::now();
     // Use the engine's negamax search with quiescence and basic eval.
     // Depth can be tuned; 'sd' overrides the default when provided.
     int searchDepth = sess.max_depth > 0 ? sess.max_depth : 8;
@@ -315,6 +316,13 @@ static Move search_best_move(EngineSession &sess) {
     Move best = getBestMove(sess.board, searchDepth, basicEvaluate, &budget, &rootScore);
     sess.last_root_score = rootScore;
     sess.has_root_score = true;
+#ifdef ENGINE_LOGGING
+    auto move_end = std::chrono::steady_clock::now();
+    auto move_elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(move_end - move_start).count();
+    log_msg("METRIC move_time ms=" + std::to_string(move_elapsed_ms) +
+            " depth=" + std::to_string(searchDepth) +
+            " score=" + std::to_string(rootScore));
+#endif
     log_msg("search_best_move: search finished");
     return best;
 }
