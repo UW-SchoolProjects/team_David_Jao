@@ -24,6 +24,10 @@ if ! command -v cutechess-cli >/dev/null 2>&1; then
 fi
 
 if [ "${APPEND_LOG:-0}" -eq 1 ]; then
+  ts="$(date +%Y%m%d-%H%M%S)"
+  LOG_FILE="$LOG_DIR/blitz_gauntlet.$ts.log"
+  PGN_FILE="$LOG_DIR/blitz_gauntlet.$ts.pgn"
+  SUMMARY_FILE="$LOG_DIR/blitz_gauntlet.$ts.summary"
   echo "Running blitz gauntlet: $ENGINE_NEW vs $ENGINE_OLD" | tee -a "$LOG_FILE"
 else
   : >"$LOG_FILE"
@@ -48,9 +52,27 @@ ENGINE_OLD_CMD="$ENGINE_OLD"
 if [ "${LOG_METRICS:-0}" -eq 1 ]; then
   : >"$ENG_NEW_STDERR"
   : >"$ENG_OLD_STDERR"
-  ENGINE_NEW_CMD="$ENGINE_NEW 2>>\"$ENG_NEW_STDERR\""
-  ENGINE_OLD_CMD="$ENGINE_OLD 2>>\"$ENG_OLD_STDERR\""
+  ENGINE_NEW_WRAPPER="$(mktemp)"
+  ENGINE_OLD_WRAPPER="$(mktemp)"
+  cat >"$ENGINE_NEW_WRAPPER" <<EOF
+#!/usr/bin/env bash
+exec "$ENGINE_NEW" "\$@" 2>>"$ENG_NEW_STDERR"
+EOF
+  cat >"$ENGINE_OLD_WRAPPER" <<EOF
+#!/usr/bin/env bash
+exec "$ENGINE_OLD" "\$@" 2>>"$ENG_OLD_STDERR"
+EOF
+  chmod +x "$ENGINE_NEW_WRAPPER" "$ENGINE_OLD_WRAPPER"
+  ENGINE_NEW_CMD="$ENGINE_NEW_WRAPPER"
+  ENGINE_OLD_CMD="$ENGINE_OLD_WRAPPER"
 fi
+
+cleanup() {
+  [ -n "${ENGINE_NEW_WRAPPER:-}" ] && [ -f "$ENGINE_NEW_WRAPPER" ] && rm -f "$ENGINE_NEW_WRAPPER"
+  [ -n "${ENGINE_OLD_WRAPPER:-}" ] && [ -f "$ENGINE_OLD_WRAPPER" ] && rm -f "$ENGINE_OLD_WRAPPER"
+  [ -n "${RUN_LOG:-}" ] && [ -f "$RUN_LOG" ] && rm -f "$RUN_LOG"
+}
+trap cleanup EXIT
 
 RUN_LOG="$(mktemp)"
 cutechess-cli \
@@ -66,14 +88,13 @@ cutechess-cli \
 status=${PIPESTATUS[0]}
 if [ "$status" -ne 0 ]; then
   echo "ERROR: cutechess-cli exited with status $status" | tee -a "$LOG_FILE"
-  rm -f "$RUN_LOG"
   exit "$status"
 fi
 
 echo "--- Summary ---" | tee -a "$LOG_FILE"
 
-# Count time forfeits (flagged losses) only in this run's output.
-FLAG_LOSSES=$(grep -Ei "forfeit|on time" "$RUN_LOG" | wc -l | awk '{print $1}')
+# Count time forfeits (flagged losses) only in this run's output from result lines.
+FLAG_LOSSES=$(grep -E "^[[:space:]]*Finished game|\\[Result" "$RUN_LOG" | grep -Ei "forfeit|on time" | wc -l | awk '{print $1}')
 rm -f "$RUN_LOG"
 echo "Flagged losses: $FLAG_LOSSES" | tee -a "$LOG_FILE"
 

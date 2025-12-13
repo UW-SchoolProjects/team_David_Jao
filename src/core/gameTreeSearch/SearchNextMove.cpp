@@ -1141,10 +1141,12 @@ Move getBestMove(Board &board, int maxDepth, EvalFn evalFn, const TimeBudget *ti
 
 #ifdef ENGINE_LOGGING
       auto depth_end = std::chrono::steady_clock::now();
-      auto depth_elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(depth_end - depth_start).count();
+      auto depth_elapsed_ms_raw = std::chrono::duration_cast<std::chrono::milliseconds>(depth_end - depth_start).count();
+      long long depth_elapsed_ms = depth_elapsed_ms_raw < 0 ? 0LL : depth_elapsed_ms_raw;
       int pv_unstable = (g_soft_overrun_ms > 0) ? 1 : 0;
+      int logged_score = (score == SCORE_TIME_ABORT || !havePV) ? lastCompletedPVScore : score;
       log_msg("METRIC depth_done depth=" + std::to_string(depth) +
-              " score=" + std::to_string(score) +
+              " score=" + std::to_string(logged_score) +
               " elapsed_ms=" + std::to_string(depth_elapsed_ms) +
               " pv_unstable=" + std::to_string(pv_unstable));
 #endif
