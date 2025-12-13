@@ -327,6 +327,8 @@ int basicEvaluate(const Board &board)
 
   int whiteBishops = 0;
   int blackBishops = 0;
+  int whiteKingSq = -1;
+  int blackKingSq = -1;
 
   int phase = 0; // 0..PHASE_TOTAL
 
@@ -365,6 +367,8 @@ int basicEvaluate(const Board &board)
       egScore += egVal;
       if (pt == BISHOP)
         ++whiteBishops;
+      if (pt == KING)
+        whiteKingSq = sq64;
     }
     else
     {
@@ -372,6 +376,8 @@ int basicEvaluate(const Board &board)
       egScore -= egVal;
       if (pt == BISHOP)
         ++blackBishops;
+      if (pt == KING)
+        blackKingSq = sq64;
     }
   }
 
@@ -408,6 +414,49 @@ int basicEvaluate(const Board &board)
     scoreWhite += TEMPO_BONUS;
   else
     scoreWhite -= TEMPO_BONUS;
+
+  // --- Endgame helpers for lone-king defense ---
+  auto edge_distance_score = [](int sq64) {
+    int file = sq64 & 7;
+    int rank = sq64 >> 3;
+    int distFile = std::max(file, 7 - file);
+    int distRank = std::max(rank, 7 - rank);
+    return std::max(distFile, distRank); // 0..7 (higher = closer to edge/corner)
+  };
+  auto king_manhattan = [](int a, int b) {
+    int af = a & 7, ar = a >> 3;
+    int bf = b & 7, br = b >> 3;
+    return std::abs(af - bf) + std::abs(ar - br);
+  };
+
+  auto no_side_pawns_pieces = [&](Side s) {
+    int idx = static_cast<int>(s) << 3;
+    return popcount(bb_of(board, idx | PAWN)) == 0 &&
+           popcount(bb_of(board, idx | KNIGHT)) == 0 &&
+           popcount(bb_of(board, idx | BISHOP)) == 0 &&
+           popcount(bb_of(board, idx | ROOK)) == 0 &&
+           popcount(bb_of(board, idx | QUEEN)) == 0;
+  };
+
+  // If defending side is bare king and attacking side has at least a rook/queen, encourage pushing king to edge and bringing our king closer.
+  if (whiteKingSq != -1 && blackKingSq != -1) {
+    bool blackBare = no_side_pawns_pieces(BLACK);
+    bool whiteBare = no_side_pawns_pieces(WHITE);
+
+    if (blackBare && (bb_of(board, WROOK) || bb_of(board, WQUEEN))) {
+      int edge = edge_distance_score(blackKingSq);
+      int kingDist = king_manhattan(whiteKingSq, blackKingSq);
+      // Reward cornering (edge up to 7) and proximity (distance up to 14).
+      scoreWhite += edge * 12;
+      scoreWhite += (14 - kingDist) * 4;
+    }
+    if (whiteBare && (bb_of(board, BROOK) || bb_of(board, BQUEEN))) {
+      int edge = edge_distance_score(whiteKingSq);
+      int kingDist = king_manhattan(whiteKingSq, blackKingSq);
+      scoreWhite -= edge * 12;
+      scoreWhite -= (14 - kingDist) * 4;
+    }
+  }
 
   // --- 50-move proximity penalty (symmetric) ---
   // Encourage finishing or resetting the counter before a forced draw.
