@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Wrapper to run cutechess-cli with the AppImage-bundled Qt libraries.
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+export LD_LIBRARY_PATH="$ROOT/squashfs-root/usr/lib:$ROOT/squashfs-root/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
+
+exec "$ROOT/squashfs-root/usr/bin/cutechess-cli" "$@"
