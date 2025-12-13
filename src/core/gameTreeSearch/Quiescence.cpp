@@ -127,7 +127,7 @@ int qsearch(Board &board, int alpha, int beta, int ply, EvalFn evalFn)
   MoveList moves;
   validMoveGeneration(board, sideToMove, moves, /*captureOnly=*/inCheck ? false : true);
 
-  // No moves: either checkmate or (maybe) stalemate
+  // No moves: either checkmate or capture-less position
   if (moves.empty()) {
     if (inCheck) {
       // Side to move is checkmated; encode distance-to-mate.
@@ -135,14 +135,9 @@ int qsearch(Board &board, int alpha, int beta, int ply, EvalFn evalFn)
       TT.store(key, 0, result, TTFlag::EXACT, Move(), ply);
       return result;
     } else {
-      // Not in check: confirm true stalemate with full legal move generation
-      MoveList allMoves;
-      validMoveGeneration(board, sideToMove, allMoves, /*captureOnly=*/false);
-      if (allMoves.empty()) {
-        // True stalemate: avoid storing exact at qsearch nodes to prevent TT poisoning.
-        return 0;
-      }
-      // Quiet moves exist: proceed (stand-pat path below)
+      // No captures and not in check: return stand-pat to keep qsearch capture-only
+      int standPatNoMoves = evalFn(board);
+      return standPatNoMoves;
     }
   }
 

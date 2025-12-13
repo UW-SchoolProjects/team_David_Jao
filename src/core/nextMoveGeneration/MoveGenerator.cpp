@@ -550,8 +550,8 @@ bool isInCheck(const Board &board, Side side)
   assert(myKing != 0 && "King bitboard missing; invalid board state");
 #endif
   if (myKing == 0) {
-    // Defensive fallback in non-assert builds: assume not in check to avoid pathological pruning
-    return false;
+    // Defensive fallback in non-assert builds: treat as in check to force evasions/termination.
+    return true;
   }
 
   int kingSq = lsb_index(myKing); // 0..63 index

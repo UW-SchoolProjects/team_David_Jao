@@ -615,13 +615,7 @@ int search(Board &board,
   pvLength[ply] = 0;
 
   // --- Depth / leaf handling ---
-  // 50-move rule or insufficient material → draw (prioritize rule-based draws)
-  if (board.halfmove_clock >= 100 || isInsufficientMaterial(board))
-  {
-    TT.store(key, effectiveDepth, 0, TTFlag::EXACT, Move(), ply);
-    return 0;
-  }
-
+  // Handle terminal no-move cases first (checkmate/stalemate)
   if (moves.empty())
   {
     if (inCheck)
@@ -639,6 +633,13 @@ int search(Board &board,
       TT.store(key, effectiveDepth, 0, TTFlag::EXACT, Move(), ply);
       return 0;
     }
+  }
+
+  // Rule-based draws (50-move / insufficient material)
+  if (board.halfmove_clock >= 100 || isInsufficientMaterial(board))
+  {
+    TT.store(key, effectiveDepth, 0, TTFlag::EXACT, Move(), ply);
+    return 0;
   }
 
   if (effectiveDepth <= 0)
