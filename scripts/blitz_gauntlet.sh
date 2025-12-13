@@ -23,8 +23,9 @@ if [ -x "$(dirname "$0")/cutechess-cli" ]; then
   PATH="$(dirname "$0"):$PATH"
 fi
 
-if ! command -v cutechess-cli >/dev/null 2>&1; then
-  echo "cutechess-cli not found in PATH" >&2
+# Fail fast if cutechess-cli cannot run (wrapper without binary will also fail here).
+if ! cutechess-cli --version >/dev/null 2>&1; then
+  echo "cutechess-cli is not available. Install it system-wide or place the AppImage under squashfs-root/ so scripts/cutechess-cli can find it." >&2
   exit 1
 fi
 
@@ -54,9 +55,13 @@ if [ ! -x "$ENGINE_OLD" ]; then
   exit 1
 fi
 
+# Resolve absolute paths for engines
+ENGINE_NEW_ABS="$(cd "$(dirname "$ENGINE_NEW")" && pwd)/$(basename "$ENGINE_NEW")"
+ENGINE_OLD_ABS="$(cd "$(dirname "$ENGINE_OLD")" && pwd)/$(basename "$ENGINE_OLD")"
+
 # Wrap engines to capture stderr metrics if LOG_METRICS=1
-ENGINE_NEW_CMD="$ENGINE_NEW"
-ENGINE_OLD_CMD="$ENGINE_OLD"
+ENGINE_NEW_CMD="$ENGINE_NEW_ABS"
+ENGINE_OLD_CMD="$ENGINE_OLD_ABS"
 if [ "${LOG_METRICS:-0}" -eq 1 ]; then
   : >"$ENG_NEW_STDERR"
   : >"$ENG_OLD_STDERR"
@@ -64,11 +69,11 @@ if [ "${LOG_METRICS:-0}" -eq 1 ]; then
   ENGINE_OLD_WRAPPER="$(mktemp)"
   cat >"$ENGINE_NEW_WRAPPER" <<EOF
 #!/usr/bin/env bash
-exec "$ENGINE_NEW" "\$@" 2>>"$ENG_NEW_STDERR"
+exec "$ENGINE_NEW_ABS" "\$@" 2>>"$ENG_NEW_STDERR"
 EOF
   cat >"$ENGINE_OLD_WRAPPER" <<EOF
 #!/usr/bin/env bash
-exec "$ENGINE_OLD" "\$@" 2>>"$ENG_OLD_STDERR"
+exec "$ENGINE_OLD_ABS" "\$@" 2>>"$ENG_OLD_STDERR"
 EOF
   chmod +x "$ENGINE_NEW_WRAPPER" "$ENGINE_OLD_WRAPPER"
   ENGINE_NEW_CMD="$ENGINE_NEW_WRAPPER"
@@ -85,6 +90,7 @@ cleanup() {
 trap cleanup EXIT
 
 RUN_LOG="$(mktemp)"
+echo "Run log path: $RUN_LOG" | tee -a "$LOG_FILE"
 cutechess-cli \
   -engine cmd="$ENGINE_NEW_CMD" proto=xboard \
   -engine cmd="$ENGINE_OLD_CMD" proto=xboard \
