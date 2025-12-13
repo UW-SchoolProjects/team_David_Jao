@@ -422,12 +422,14 @@ int basicEvaluate(const Board &board)
     scoreWhite -= TEMPO_BONUS;
 
   // --- Endgame helpers for lone-king defense ---
-  auto edge_distance_score = [](int sq64) {
-    int file = sq64 & 7;
-    int rank = sq64 >> 3;
-    int distFile = std::max(file, 7 - file);
-    int distRank = std::max(rank, 7 - rank);
-    return std::max(distFile, distRank); // 0..7 (higher = closer to edge/corner)
+  // Prefer corners more strongly than generic edges for mate drives.
+  auto corner_preference_score = [](int sq64) {
+    int f = sq64 & 7;
+    int r = sq64 >> 3;
+    int df = std::min(f, 7 - f);
+    int dr = std::min(r, 7 - r);
+    int cheb_to_corner = std::max(df, dr); // 0 at corner, up to 7 at center
+    return 7 - std::min(cheb_to_corner, 7); // higher is closer to corner
   };
   auto king_manhattan = [](int a, int b) {
     int af = a & 7, ar = a >> 3;
@@ -475,7 +477,7 @@ int basicEvaluate(const Board &board)
     int whiteNonKing = count_nonking_material(WHITE);
 
     if (blackBare && !whiteBare && side_has_mating_material(WHITE)) {
-      int edge = edge_distance_score(blackKingSq);
+      int edge = corner_preference_score(blackKingSq);
       int kingDist = king_manhattan(whiteKingSq, blackKingSq);
       scoreWhite += edge * 12;
       scoreWhite += (14 - kingDist) * 4;
@@ -485,7 +487,7 @@ int basicEvaluate(const Board &board)
       }
     }
     if (whiteBare && !blackBare && side_has_mating_material(BLACK)) {
-      int edge = edge_distance_score(whiteKingSq);
+      int edge = corner_preference_score(whiteKingSq);
       int kingDist = king_manhattan(whiteKingSq, blackKingSq);
       scoreWhite -= edge * 12;
       scoreWhite -= (14 - kingDist) * 4;
@@ -497,7 +499,7 @@ int basicEvaluate(const Board &board)
 
     // Broader mate drive: if defender has at most one non-king piece and no pawns, still drive king + heavy/minor pieces closer.
     if (side_has_mating_material(WHITE) && popcount(bb_of(board, BPAWN)) == 0 && blackNonKing <= 1) {
-      int edge = edge_distance_score(blackKingSq);
+      int edge = corner_preference_score(blackKingSq);
       int kingDist = king_manhattan(whiteKingSq, blackKingSq);
       scoreWhite += edge * 10;
       scoreWhite += (14 - kingDist) * 3;
@@ -516,7 +518,7 @@ int basicEvaluate(const Board &board)
       }
     }
     if (side_has_mating_material(BLACK) && popcount(bb_of(board, WPAWN)) == 0 && whiteNonKing <= 1) {
-      int edge = edge_distance_score(whiteKingSq);
+      int edge = corner_preference_score(whiteKingSq);
       int kingDist = king_manhattan(whiteKingSq, blackKingSq);
       scoreWhite -= edge * 10;
       scoreWhite -= (14 - kingDist) * 3;
