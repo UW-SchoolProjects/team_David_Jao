@@ -96,9 +96,6 @@ See LICENSE file for details.
 #include <cmath>
 #include <climits>
 
-// Sentinel returned when search aborts due to time limit.
-static constexpr int SCORE_TIME_ABORT = 32001;
-
 #ifdef ENGINE_LOGGING
 #include <string>
 #include <iostream>

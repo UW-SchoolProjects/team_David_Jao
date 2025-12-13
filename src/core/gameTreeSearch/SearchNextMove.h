@@ -102,4 +102,7 @@ bool isInsufficientMaterial(const Board &b);
 // Static Exchange Evaluation: net material gain/loss for a capture sequence.
 int static_exchange_eval(const Board &board, const Move &m);
 
+// Sentinel used when search aborts due to time constraints.
+inline constexpr int SCORE_TIME_ABORT = 32001;
+
 #endif
