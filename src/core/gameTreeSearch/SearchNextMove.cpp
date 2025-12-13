@@ -95,6 +95,7 @@ See LICENSE file for details.
 #include <chrono>
 #include <cmath>
 #include <climits>
+#include <cstdint>
 
 #ifdef ENGINE_LOGGING
 #include <string>
@@ -211,6 +212,9 @@ static inline void decay_history()
       for (int t = 0; t < 64; ++t)
         historyTable[s][f][t] >>= 1;
 }
+
+// Node counter for instrumentation (shared with quiescence)
+uint64_t g_node_counter = 0ULL;
 
 // -------------- Time control state --------------
 static const TimeBudget *g_time_budget = nullptr;
@@ -473,8 +477,8 @@ int static_exchange_eval(const Board &board, const Move &m)
 }
 
 // Estimate whether a quiet move provokes a favorable forced recapture for the opponent.
-// Returns penalty in centipawns to be applied to ordering/eval heuristics.
-static int compute_provoke_penalty(Board &board, const Move &quietMove, Side us)
+// Uses SEE plus a cheap static-eval delta; returns penalty in centipawns for ordering/eval.
+static int compute_provoke_penalty(Board &board, const Move &quietMove, Side us, EvalFn evalFn)
 {
   // Only apply to quiet moves
   if (quietMove.isCapture()) return 0;
@@ -489,21 +493,37 @@ static int compute_provoke_penalty(Board &board, const Move &quietMove, Side us)
   int penalty = 0;
   if (!oppMoves.empty() && oppMoves.moves[0].isCapture())
   {
-    int worst = 0;
-    for (int i = 0; i < oppMoves.count; ++i)
+    constexpr int evalGainThreshold = 30; // cp threshold for "obvious" improvement
+    const int quietEvalOpp = evalFn(board); // board.side == opp after quiet move
+    bool risky = false;
+
+    for (int i = 0; i < oppMoves.count && !risky; ++i)
     {
       const Move &m = oppMoves.moves[i];
       if (!m.isCapture()) continue;
 
-      // Placeholder SEE: captured value - attacker value
-      int capturedVal = heuristic_piece_value(m.captured());
-      int attackerPiece = board.squares[SQ64_to_0x88(m.from())];
-      int attackerVal = heuristic_piece_value(type_of(attackerPiece));
-      int gain = capturedVal - attackerVal;
-      if (gain > worst) worst = gain;
+      int seeScore = static_exchange_eval(board, m); // perspective of side to move (opp)
+      if (seeScore >= 0)
+      {
+        risky = true;
+        break;
+      }
+
+      if (make_move(board, m))
+      {
+        // Eval after capture from opponent POV (flip because side-to-move changes).
+        int afterEvalStm = evalFn(board);
+        int afterEvalOpp = -afterEvalStm;
+        int evalGain = afterEvalOpp - quietEvalOpp;
+        if (evalGain >= evalGainThreshold)
+        {
+          risky = true;
+        }
+        unmake_move(board);
+      }
     }
 
-    if (worst >= 0)
+    if (risky)
     {
       penalty = PROVOKE_PENALTY_CP;
     }
@@ -523,6 +543,7 @@ int search(Board &board,
            int extensionsUsed,
            bool isNullSearch)
 {
+  ++g_node_counter;
   if (g_time_budget && time_check_due()) {
     bool hard_stop = time_expired();
     if (hard_stop) {
@@ -571,10 +592,13 @@ int search(Board &board,
     {
       const Move &m = moves.moves[i];
       if (m.isCapture()) continue;
-      int pen = compute_provoke_penalty(board, m, sideToMove);
+      int pen = compute_provoke_penalty(board, m, sideToMove, evalFn);
       if (pen > 0)
       {
         quietPenalties[m.raw()] = pen;
+#ifdef ENGINE_LOGGING
+        log_msg("quiet_penalty mv=" + m.toString() + " pen=" + std::to_string(pen));
+#endif
       }
     }
   }
@@ -1062,6 +1086,7 @@ Move getBestMove(Board &board, int maxDepth, EvalFn evalFn, const TimeBudget *ti
 #ifdef ENGINE_LOGGING
   log_msg("getBestMove start maxDepth=" + std::to_string(maxDepth));
 #endif
+  g_node_counter = 0;
   clear_killers();
   Move bestMove;     // move to return
   int bestScore = 0; // last stable root score
@@ -1081,6 +1106,9 @@ Move getBestMove(Board &board, int maxDepth, EvalFn evalFn, const TimeBudget *ti
 
   for (int depth = 1; depth <= maxDepth; ++depth)
   {
+#ifdef ENGINE_LOGGING
+    uint64_t nodes_before = g_node_counter;
+#endif
     int alpha, beta;
     int score;
 
@@ -1142,10 +1170,13 @@ Move getBestMove(Board &board, int maxDepth, EvalFn evalFn, const TimeBudget *ti
       long long depth_elapsed_ms = depth_elapsed_ms_raw < 0 ? 0LL : depth_elapsed_ms_raw;
       int pv_unstable = (g_soft_overrun_ms > 0) ? 1 : 0;
       int logged_score = (score == SCORE_TIME_ABORT || !havePV) ? lastCompletedPVScore : score;
+      uint64_t depth_nodes = g_node_counter - nodes_before;
       log_msg("METRIC depth_done depth=" + std::to_string(depth) +
               " score=" + std::to_string(logged_score) +
               " elapsed_ms=" + std::to_string(depth_elapsed_ms) +
-              " pv_unstable=" + std::to_string(pv_unstable));
+              " pv_unstable=" + std::to_string(pv_unstable) +
+              " nodes_cumulative=" + std::to_string(g_node_counter) +
+              " nodes_depth=" + std::to_string(depth_nodes));
 #endif
 
       // (Optional) You can print or log the PV line here for debugging:

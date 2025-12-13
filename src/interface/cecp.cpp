@@ -461,9 +461,9 @@ static void handle_go(EngineSession &sess) {
 }
 
 static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
-    log_msg("usermove " + mvStr);
-    Move m;
-    if (!parse_uci_move(sess.board, mvStr, m)) {
+  log_msg("usermove " + mvStr);
+  Move m;
+  if (!parse_uci_move(sess.board, mvStr, m)) {
         log_msg("usermove rejected: not found in legal list");
         std::cout << "Illegal move: " << mvStr << "\n";
         return;
@@ -471,15 +471,23 @@ static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
     log_msg("parsed uci move " + std::to_string(m.from()) + std::to_string(m.to()));
     bool ok = make_move(sess.board, m);
     if (!ok) {
-        log_msg("usermove rejected: make_move failed");
-        std::cout << "Illegal move: " << mvStr << "\n";
-        return;
+      log_msg("usermove rejected: make_move failed");
+      std::cout << "Illegal move: " << mvStr << "\n";
+      return;
     }
 
+    sess.has_root_score = false; // invalidate stale eval for new position
     sess.side_to_move = sess.board.side;
     log_board_fen(sess.board, "After usermove");
     // Opponent just moved; record their move end (our clock starts now).
     sess.last_opp_move_ts = std::chrono::steady_clock::now();
+
+    MoveList moves;
+    generate_variant_moves(sess.board, moves);
+    if (moves.count == 0) {
+        log_msg("no legal replies after usermove; skipping engine move");
+        return;
+    }
 
     log_msg(sess.mode == EngineMode::PLAYING ? "play is on" : "play not on");
     if (sess.mode == EngineMode::PLAYING && sess.board.side == sess.engine_side) {
@@ -514,8 +522,20 @@ static void handle_level(EngineSession &sess,
     sess.increment_ms      = increment_seconds * 1000;
 }
 
+static constexpr int MAX_TIME_PER_MOVE_MS = 60000; // 60 seconds cap to avoid runaway budgets
+
 static void handle_st(EngineSession &sess, int seconds) {
-    sess.time_per_move_ms = seconds * 1000;
+    if (seconds < 0) seconds = 0;
+    long long ms = static_cast<long long>(seconds) * 1000LL;
+    if (ms > MAX_TIME_PER_MOVE_MS) ms = MAX_TIME_PER_MOVE_MS;
+    sess.time_per_move_ms = static_cast<int>(ms);
+}
+
+// Fixed time-per-move in milliseconds (custom helper for sampling harnesses).
+static void handle_st_ms(EngineSession &sess, int ms) {
+    if (ms < 0) ms = 0;
+    if (ms > MAX_TIME_PER_MOVE_MS) ms = MAX_TIME_PER_MOVE_MS;
+    sess.time_per_move_ms = ms;
 }
 
 static void handle_sd(EngineSession &sess, int depth) {
@@ -637,6 +657,10 @@ void cecp_main_loop(EngineSession &sess) {
             int seconds = 0; iss >> seconds;
             handle_st(sess, seconds);
         }
+        else if (cmd == "stms") {
+            int ms = 0; iss >> ms;
+            handle_st_ms(sess, ms);
+        }
         else if (cmd == "sd") {
             int depth = 0; iss >> depth;
             handle_sd(sess, depth);
@@ -644,6 +668,34 @@ void cecp_main_loop(EngineSession &sess) {
         else if (cmd == "ping") {
             int id; iss >> id;
             handle_ping(sess, id);
+        }
+        else if (cmd == "david_fen") {
+            std::cout << "fen " << dump_fen(sess.board) << "\n";
+            std::cout.flush();
+        }
+        else if (cmd == "david_lastscore") {
+            if (sess.has_root_score) {
+                std::cout << "lastscore " << sess.last_root_score << "\n";
+            } else {
+                std::cout << "lastscore none\n";
+            }
+            std::cout.flush();
+        }
+        else if (cmd == "david_moves") {
+            MoveList moves;
+            generate_variant_moves(sess.board, moves);
+            std::cout << "moves";
+            Board tmp = sess.board;
+            for (int i = 0; i < moves.count; ++i) {
+                const Move &m = moves.moves[i];
+                if (!make_move(tmp, m)) {
+                    continue;
+                }
+                unmake_move(tmp);
+                std::cout << ' ' << move_to_uci(m);
+            }
+            std::cout << "\n";
+            std::cout.flush();
         }
         else if (cmd == "result") {
             handle_result(sess, line);

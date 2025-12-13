@@ -91,8 +91,11 @@ See LICENSE file for details.
 #include "../nextMoveGeneration/MoveApply.h"
 #include <algorithm>
 
+extern uint64_t g_node_counter;
+
 int qsearch(Board &board, int alpha, int beta, int ply, EvalFn evalFn)
 {
+  ++g_node_counter;
   const int alphaOrig = alpha;
   const uint64_t key = board.zobrist_key;
 
