@@ -21,6 +21,7 @@ if [[ ! -x "$BIN" ]]; then
   case "$PATH_FALLBACK" in
     "$SCRIPT_DIR:"*) PATH_FALLBACK="${PATH_FALLBACK#${SCRIPT_DIR}:}" ;;
     *":$SCRIPT_DIR") PATH_FALLBACK="${PATH_FALLBACK%:${SCRIPT_DIR}}" ;;
+    *":$SCRIPT_DIR:"*) PATH_FALLBACK="${PATH_FALLBACK/:${SCRIPT_DIR}:/\:}" ;;
   esac
   alt_path=$(PATH="$PATH_FALLBACK" command -v cutechess-cli || true)
   if [[ -n "$alt_path" ]]; then

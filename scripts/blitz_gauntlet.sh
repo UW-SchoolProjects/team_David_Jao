@@ -84,6 +84,7 @@ trap cleanup EXIT
 
 RUN_LOG="$(mktemp)"
 cutechess-cli \
+  ${DEBUG_CUTECHESS:+-debug} \
   -engine cmd="$ENGINE_NEW_CMD" proto=xboard \
   -engine cmd="$ENGINE_OLD_CMD" proto=xboard \
   -each tc=$TC \
@@ -103,7 +104,11 @@ echo "--- Summary ---" | tee -a "$LOG_FILE"
 
 # Count time forfeits (flagged losses) only in this run's output from result lines.
 FLAG_LOSSES=$(grep -E "^[[:space:]]*Finished game|\\[Result" "$RUN_LOG" | grep -Ei "forfeit|on time" | wc -l | awk '{print $1}')
-rm -f "$RUN_LOG"
+if [ "${KEEP_RUN_LOG:-0}" -eq 0 ]; then
+  rm -f "$RUN_LOG"
+else
+  echo "Run log kept at: $RUN_LOG" | tee -a "$LOG_FILE"
+fi
 echo "Flagged losses: $FLAG_LOSSES" | tee -a "$LOG_FILE"
 
 if [ "$FLAG_LOSSES" -gt 0 ]; then
