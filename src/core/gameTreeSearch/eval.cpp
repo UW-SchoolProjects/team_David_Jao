@@ -409,6 +409,19 @@ int basicEvaluate(const Board &board)
   else
     scoreWhite -= TEMPO_BONUS;
 
+  // --- 50-move proximity penalty (symmetric) ---
+  // Encourage finishing or resetting the counter before a forced draw.
+  // Applied from White POV; bucketed to keep it mild.
+  {
+    int hm = board.halfmove_clock;
+    int penalty = 0;
+    if (hm > 70)
+    {
+      penalty = (hm - 70) * 2; // 2 cp per ply after 70
+    }
+    scoreWhite -= penalty;
+  }
+
   // Convert from White POV to side-to-move POV:
   // Positive = good for side to move.
   if (board.side == WHITE)

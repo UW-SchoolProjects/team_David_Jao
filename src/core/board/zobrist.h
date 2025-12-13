@@ -108,8 +108,8 @@ extern uint64_t Z_CASTLING[16];
 // Optional: only include if EP square is capturable.
 extern uint64_t Z_EP_FILE[8];
 
-// Rule-50 halfmove clock keys (index clamped to [0,100]).
-extern uint64_t Z_RULE50[101];
+// Rule-50 halfmove clock keys (bucketed in 4-ply increments, indices 0..25).
+extern uint64_t Z_RULE50[26];
 
 extern uint64_t rng_state[2];
 
@@ -149,8 +149,10 @@ void zobrist_update_castling_rights_EP_file(Board &b, int old_castling, int old_
 // Clamp halfmove clock to the hash range and update hash when the clock changes.
 inline int clamp_rule50_index(int halfmove_clock) {
     if (halfmove_clock < 0) return 0;
-    if (halfmove_clock > 100) return 100;
-    return halfmove_clock;
+    // Bucket in 4-ply chunks to avoid TT fragmentation but still differentiate late clocks.
+    int bucket = halfmove_clock / 4;
+    if (bucket > 25) bucket = 25;
+    return bucket;
 }
 
 inline void zobrist_update_rule50(Board &b, int old_halfmove, int new_halfmove) {
