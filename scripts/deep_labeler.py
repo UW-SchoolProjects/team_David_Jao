@@ -38,26 +38,25 @@ def read_until(proc: subprocess.Popen, timeout: float, predicate) -> Optional[st
             return None
         if not ready:
             continue
-        try:
-            line = proc.stdout.readline()
-        except Exception:
-            return None
-        if line is None:
-            continue
-        if line == "":
-            if proc.poll() is not None:
-                return None
-            continue
-        if isinstance(line, bytes):
+        while True:
             try:
-                line = line.decode(errors="ignore")
+                line = proc.stdout.readline()
             except Exception:
+                return None
+            if line == "":
+                if proc.poll() is not None:
+                    return None
+                break
+            if isinstance(line, bytes):
+                try:
+                    line = line.decode(errors="ignore")
+                except Exception:
+                    continue
+            line = line.strip()
+            if not line:
                 continue
-        line = line.strip()
-        if not line:
-            continue
-        if predicate(line):
-            return line
+            if predicate(line):
+                return line
     return None
 
 
@@ -79,7 +78,7 @@ def start_engine(cmd: str, extra_env: Optional[dict] = None) -> subprocess.Popen
         text=True,
         encoding="utf-8",
         errors="replace",
-        bufsize=0,
+        bufsize=1,
         env=env,
     )
     try:
@@ -96,6 +95,7 @@ def handshake(proc: subprocess.Popen, args) -> bool:
     if not send(proc, "xboard"):
         return False
     send(proc, "protover 2")
+    feat_ok = read_until(proc, timeout=2.0, predicate=lambda l: l.startswith("feature ") or l == "done=1")
     send(proc, "new")
     send(proc, "force")
     if args.deep_depth > 0:
@@ -106,7 +106,7 @@ def handshake(proc: subprocess.Popen, args) -> bool:
     send(proc, f"otim {args.clock_cs}")
     # Verify custom command responds
     probe = query_prefix(proc, "david_fen", "fen ", timeout=1.0)
-    return probe is not None
+    return (feat_ok is not None) and (probe is not None)
 
 
 def request_lastscore(proc: subprocess.Popen) -> Optional[int]:
@@ -138,13 +138,6 @@ def request_lastscore(proc: subprocess.Popen) -> Optional[int]:
 def evaluate_position(proc: subprocess.Popen, fen: str, side: str, args, move_timeout: float) -> Optional[int]:
     if not send(proc, f"setboard {fen}"):
         return None
-    if args.deep_depth > 0:
-        send(proc, f"sd {args.deep_depth}")
-    if args.deep_time_ms > 0:
-        send(proc, f"stms {args.deep_time_ms}")
-        cs = max(1, args.deep_time_ms // 10)
-        send(proc, f"time {cs}")
-        send(proc, f"otim {cs}")
 
     stm = side.strip().lower()
     go_cmd = "white" if stm.startswith("w") else "black"
@@ -163,14 +156,14 @@ def normalize(cp: int, scale: float) -> float:
 
 def open_reader(path: str):
     if path.endswith(".gz"):
-        return gzip.open(path, "rt", newline="")
-    return open(path, "r", newline="")
+        return gzip.open(path, "rt", newline="", encoding="utf-8", errors="replace")
+    return open(path, "r", newline="", encoding="utf-8", errors="replace")
 
 
 def open_writer(path: str):
     if path.endswith(".gz"):
-        return gzip.open(path, "wt", newline="")
-    return open(path, "w", newline="")
+        return gzip.open(path, "wt", newline="", encoding="utf-8")
+    return open(path, "w", newline="", encoding="utf-8")
 
 
 def parse_args() -> argparse.Namespace:
@@ -214,22 +207,37 @@ def main():
     written = 0
     with open_reader(args.input) as fh, open_writer(args.output) as out_fh:
         reader = csv.DictReader(fh)
-        fieldnames = list(reader.fieldnames or []) + ["eval_deep_cp", "eval_deep_norm"]
+        if not reader.fieldnames:
+            fail_writer.write("fatal: input has no header\n")
+            fail_writer.flush()
+            proc.kill()
+            return
+        base_fields = [f for f in reader.fieldnames if f not in ("eval_deep_cp", "eval_deep_norm")]
+        fieldnames = base_fields + ["eval_deep_cp", "eval_deep_norm"]
         writer = csv.DictWriter(out_fh, fieldnames=fieldnames)
         writer.writeheader()
 
         for idx, row in enumerate(reader):
             total += 1
-            fen = row.get("fen", "").strip()
+            fen = (row.get("fen") or "").strip()
             if not fen:
                 fail_writer.write(f"{idx}: missing fen\n")
+                if idx % 100 == 0:
+                    fail_writer.flush()
                 continue
-            side = row.get("side_to_move") or (fen.split()[1] if len(fen.split()) >= 2 else "w")
+            parts = fen.split()
+            if len(parts) >= 2:
+                default_side = parts[1]
+            else:
+                default_side = "w"
+            side = row.get("side_to_move") or default_side
             score = evaluate_position(proc, fen, side, args, args.move_timeout)
             if score is None:
                 fail_writer.write(f"{idx}: eval_fail\n")
+                if idx % 100 == 0:
+                    fail_writer.flush()
                 continue
-            row_out = dict(row)
+            row_out = {**row}
             row_out["eval_deep_cp"] = str(score)
             row_out["eval_deep_norm"] = f"{normalize(score, args.tanh_scale):.6f}"
             writer.writerow(row_out)
