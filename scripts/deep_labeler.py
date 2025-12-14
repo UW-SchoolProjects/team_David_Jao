@@ -212,6 +212,9 @@ def evaluate_position(proc: subprocess.Popen, fen: str, side: str, args, move_ti
         st_seconds = max(1, int(round(args.deep_time_ms / 1000.0)))
         if not send(proc, f"st {st_seconds}"):
             return None
+    if args.clock_cs > 0:
+        send(proc, f"time {args.clock_cs}")
+        send(proc, f"otim {args.clock_cs}")
 
     stm = side.strip().lower()
     go_cmd = "white" if stm.startswith("w") else "black"
