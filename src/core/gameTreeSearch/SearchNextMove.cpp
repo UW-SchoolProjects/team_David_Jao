@@ -571,6 +571,10 @@ int search(Board &board,
   const uint64_t key = board.zobrist_key;
   const Side sideToMove = static_cast<Side>(board.side);
   const bool inCheck = isInCheck(board, sideToMove);
+  const int totalNonKing =
+      count_side_nonking(board, WHITE) + count_side_nonking(board, BLACK);
+  const bool pruneDisabledEndgame =
+      is_clear_endgame_for_null(board) || totalNonKing <= 6;
 
   int ttScore = 0;
   Move ttMove;
@@ -718,7 +722,8 @@ int search(Board &board,
   int staticEval = 0;
   bool haveStaticEval = false;
 
-  if (!isNullSearch &&
+  if (!pruneDisabledEndgame &&
+      !isNullSearch &&
       !inCheck &&
       ply > 0 &&
       !hasActiveEP &&
@@ -933,7 +938,8 @@ int search(Board &board,
     int score = 0;
 
     // Futility pruning for shallow depths on quiet moves (no captures/promos), not in check, not capture-only.
-    if (!inCheck &&
+    if (!pruneDisabledEndgame &&
+        !inCheck &&
         nextChainLen == 0 &&
         searchDepthChild <= 2 &&
         !m.isCapture() &&
@@ -970,7 +976,8 @@ int search(Board &board,
     const bool givesCheck = isInCheck(board, oppSide);
 
     int reduction = 0;
-    if (!isPVNode &&
+    if (!pruneDisabledEndgame &&
+        !isPVNode &&
         !inCheckParent &&
         moves.count > 1 &&
         nextChainLen == 0 &&     // do not reduce after capture sequences
