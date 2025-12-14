@@ -96,14 +96,18 @@ See LICENSE file for details.
 #include <cmath>
 #include <climits>
 #include <cstdint>
-
-#ifdef ENGINE_LOGGING
 #include <string>
 #include <iostream>
+
+#ifdef ENGINE_LOGGING
 static inline void log_msg(const std::string &msg) {
   std::cerr << "[engine] " << msg << std::endl;
 }
 #endif
+
+static inline void diag_log_search(const std::string &msg) {
+  std::cerr << "[diag-search] " << msg << std::endl;
+}
 
 // Simple material draw detector (insufficient material).
 bool isInsufficientMaterial(const Board &b)
@@ -544,16 +548,18 @@ int search(Board &board,
            bool isNullSearch)
 {
   ++g_node_counter;
-  if (g_time_budget && time_check_due()) {
-    bool hard_stop = time_expired();
-    if (hard_stop) {
-      // On hard timeout, preserve bounds by returning current alpha.
+  // Check time at every node: forced-capture + quiescence can make nodes expensive,
+  // so a coarse node-throttle can miss hard budgets badly.
+  if (g_time_budget) {
+    (void)time_expired(); // updates abort flags
+    if (g_time_abort || g_time_soft_abort) {
       return SCORE_TIME_ABORT;
     }
-    if (g_time_soft_abort) {
-      // Soft timeout flagged: request graceful unwind.
-      return SCORE_TIME_ABORT;
-    }
+  }
+
+  // Minimal breadcrumb for diagnosing stalls: log root depth-1 entry once per move.
+  if (ply == 0 && depth == 1) {
+    diag_log_search("enter_root_depth1 stm=" + std::string(board.side == WHITE ? "w" : "b"));
   }
 // #ifdef ENGINE_LOGGING
 //   log_msg("search start depth=" + std::to_string(depth) +
@@ -588,17 +594,40 @@ int search(Board &board,
   std::unordered_map<uint32_t, int> quietPenalties;
   if (ply == 0)
   {
-    for (int i = 0; i < moves.count; ++i)
+    // This is optional work and can be expensive because it runs outside the main time-check throttle.
+    // Only do it when we have a comfortably large hard budget.
+    const int hard_ms = (g_time_budget ? g_time_budget->hard_ms : INT_MAX);
+    if (hard_ms >= 2000)
     {
-      const Move &m = moves.moves[i];
-      if (m.isCapture()) continue;
-      int pen = compute_provoke_penalty(board, m, sideToMove, evalFn);
-      if (pen > 0)
+      const auto pre_start = std::chrono::steady_clock::now();
+      int quiet_checked = 0;
+      int penalties_applied = 0;
+
+      for (int i = 0; i < moves.count; ++i)
       {
-        quietPenalties[m.raw()] = pen;
+        const Move &m = moves.moves[i];
+        if (m.isCapture()) continue;
+        ++quiet_checked;
+        int pen = compute_provoke_penalty(board, m, sideToMove, evalFn);
+        if (pen > 0)
+        {
+          quietPenalties[m.raw()] = pen;
+          ++penalties_applied;
 #ifdef ENGINE_LOGGING
-        log_msg("quiet_penalty mv=" + m.toString() + " pen=" + std::to_string(pen));
+          log_msg("quiet_penalty mv=" + m.toString() + " pen=" + std::to_string(pen));
 #endif
+        }
+      }
+
+      if (g_time_budget) {
+        auto pre_end = std::chrono::steady_clock::now();
+        auto pre_ms = std::chrono::duration_cast<std::chrono::milliseconds>(pre_end - pre_start).count();
+        if (pre_ms > 50) {
+          diag_log_search("root_precompute_provoke ms=" + std::to_string(pre_ms) +
+                          " hard_budget_ms=" + std::to_string(hard_ms) +
+                          " quiet_checked=" + std::to_string(quiet_checked) +
+                          " penalties=" + std::to_string(penalties_applied));
+        }
       }
     }
   }
@@ -711,11 +740,12 @@ int search(Board &board,
         if (make_null(board, nu))
         {
           int nullDepth = effectiveDepth - 1 - nullReduction;
-            int nullScore = -search(board, nullDepth, -beta, -beta + 1, ply + 1, evalFn, /*captureChainLen=*/0, usedExtensions, /*isNullSearch=*/true);
-            if (nullScore == SCORE_TIME_ABORT) {
+            int nullChild = search(board, nullDepth, -beta, -beta + 1, ply + 1, evalFn, /*captureChainLen=*/0, usedExtensions, /*isNullSearch=*/true);
+            if (nullChild == SCORE_TIME_ABORT) {
               unmake_null(board, nu);
               return SCORE_TIME_ABORT;
             }
+            int nullScore = -nullChild;
             unmake_null(board, nu);
 
           if (nullScore >= beta)
@@ -957,11 +987,12 @@ int search(Board &board,
       int reducedDepth = searchDepthChild - reduction;
       if (reducedDepth < 1) reducedDepth = 1;
 
-      score = -search(board, reducedDepth, -beta, -alpha, ply + 1, evalFn, nextChainLen, usedExtensions, /*isNullSearch=*/false);
-      if (score == SCORE_TIME_ABORT) {
+      int childReduced = search(board, reducedDepth, -beta, -alpha, ply + 1, evalFn, nextChainLen, usedExtensions, /*isNullSearch=*/false);
+      if (childReduced == SCORE_TIME_ABORT) {
         unmake_move(board);
         return SCORE_TIME_ABORT;
       }
+      score = -childReduced;
       if (score > alpha)
       {
         if (score >= beta)
@@ -971,21 +1002,23 @@ int search(Board &board,
         else
         {
           // Re-search at full depth when reduced search improves alpha.
-          score = -search(board, searchDepthChild, -beta, -alpha, ply + 1, evalFn, nextChainLen, usedExtensions, /*isNullSearch=*/false);
-          if (score == SCORE_TIME_ABORT) {
+          int childFull = search(board, searchDepthChild, -beta, -alpha, ply + 1, evalFn, nextChainLen, usedExtensions, /*isNullSearch=*/false);
+          if (childFull == SCORE_TIME_ABORT) {
             unmake_move(board);
             return SCORE_TIME_ABORT;
           }
+          score = -childFull;
         }
       }
     }
     else
     {
-      score = -search(board, searchDepthChild, -beta, -alpha, ply + 1, evalFn, nextChainLen, usedExtensions, /*isNullSearch=*/false);
-      if (score == SCORE_TIME_ABORT) {
+      int child = search(board, searchDepthChild, -beta, -alpha, ply + 1, evalFn, nextChainLen, usedExtensions, /*isNullSearch=*/false);
+      if (child == SCORE_TIME_ABORT) {
         unmake_move(board);
         return SCORE_TIME_ABORT;
       }
+      score = -child;
     }
 
     unmake_move(board);
@@ -1081,11 +1114,25 @@ static inline bool time_expired() {
   return false;
 }
 
+bool search_time_expired() {
+  if (!g_time_budget) return false;
+  if (g_time_abort) return true;
+  (void)time_expired(); // updates abort flags
+  return g_time_abort || g_time_soft_abort;
+}
+
 Move getBestMove(Board &board, int maxDepth, EvalFn evalFn, const TimeBudget *timeBudget, int *outRootScore)
 {
 #ifdef ENGINE_LOGGING
   log_msg("getBestMove start maxDepth=" + std::to_string(maxDepth));
 #endif
+  if (timeBudget) {
+    diag_log_search("getBestMove_enter maxDepth=" + std::to_string(maxDepth) +
+                    " soft_ms=" + std::to_string(timeBudget->soft_ms) +
+                    " hard_ms=" + std::to_string(timeBudget->hard_ms));
+  } else {
+    diag_log_search("getBestMove_enter maxDepth=" + std::to_string(maxDepth) + " budget=null");
+  }
   g_node_counter = 0;
   clear_killers();
   Move bestMove;     // move to return
@@ -1117,6 +1164,7 @@ Move getBestMove(Board &board, int maxDepth, EvalFn evalFn, const TimeBudget *ti
       // First iteration: full-window search.
       alpha = -SCORE_INF;
       beta = SCORE_INF;
+      diag_log_search("getBestMove_depth1_search_begin");
       score = search(board, depth, alpha, beta, /*ply=*/0, evalFn, /*captureChainLen=*/0, /*extensionsUsed=*/0, /*isNullSearch=*/false);
     }
     else

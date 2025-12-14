@@ -106,4 +106,7 @@ int static_exchange_eval(const Board &board, const Move &m);
 // Keep sufficiently large but safe for arithmetic (negation, +/- ply).
 inline constexpr int SCORE_TIME_ABORT = 32001;
 
+// Exposed for quiescence: returns true if the current search should hard-abort on time.
+bool search_time_expired();
+
 #endif

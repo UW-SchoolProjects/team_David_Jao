@@ -215,17 +215,41 @@ def drain_stdout(proc: subprocess.Popen):
         pass
 
 
+def dump_engine_output(proc: subprocess.Popen, fail_writer, header: str):
+    """Reads any buffered stdout/stderr from the engine without blocking (for diagnostics)."""
+    fail_writer.write(f"--- {header} ---\n")
+    def drain_stream(stream, label: str):
+        if not stream:
+            fail_writer.write(f"   [{label}: closed]\n")
+            return
+        try:
+            while True:
+                ready, _, _ = select.select([stream], [], [], 0)
+                if not ready:
+                    break
+                line = stream.readline()
+                if not line:
+                    break
+                fail_writer.write(f"   [{label}] {line.strip()}\n")
+        except Exception as e:
+            fail_writer.write(f"   [{label} read error: {e}]\n")
+
+    drain_stream(proc.stdout, "stdout")
+    drain_stream(proc.stderr, "stderr")
+    fail_writer.write("--------------------------------\n")
+
+
 def evaluate_position(proc: subprocess.Popen, fen: str, side: str, args, move_timeout: float, fail_writer) -> Optional[int]:
     drain_stdout(proc)
     if not send(proc, f"setboard {fen}"):
+        fail_writer.write(f"FAIL: 'setboard' rejected for FEN: {fen}\n")
         return None
 
-    if args.deep_depth > 0 and not send(proc, f"sd {args.deep_depth}"):
-        return None
+    if args.deep_depth > 0:
+        send(proc, f"sd {args.deep_depth}")
     if args.deep_time_ms > 0:
         st_seconds = max(1, int(round(args.deep_time_ms / 1000.0)))
-        if not send(proc, f"st {st_seconds}"):
-            return None
+        send(proc, f"st {st_seconds}")
     if args.clock_cs > 0:
         send(proc, f"time {args.clock_cs}")
         send(proc, f"otim {args.clock_cs}")
@@ -245,22 +269,33 @@ def evaluate_position(proc: subprocess.Popen, fen: str, side: str, args, move_ti
     stm = side.strip().lower()
     go_cmd = "white" if stm.startswith("w") else "black"
     if not send(proc, go_cmd):
+        fail_writer.write("FAIL: 'go' command rejected.\n")
         return None
+
+    start_time = time.time()
     move_line = read_until(
         proc,
         move_timeout,
         lambda l: l.startswith("move ") or l in ("1-0", "0-1", "1/2-1/2"),
         line_handler=handle_output,
     )
+    elapsed = time.time() - start_time
+
     if move_line is None:
+        exit_code = proc.poll()
+        if exit_code is not None:
+            fail_writer.write(f"CRASH: engine exited (code {exit_code}) after {elapsed:.2f}s on FEN: {fen}\n")
+        elif elapsed >= move_timeout:
+            fail_writer.write(f"TIMEOUT: >{elapsed:.2f}s (limit {move_timeout}s) on FEN: {fen}\n")
+            dump_engine_output(proc, fail_writer, "Buffered Output at Timeout")
+        else:
+            fail_writer.write(f"ERROR: engine silent/EOF after {elapsed:.2f}s on FEN: {fen}\n")
+            dump_engine_output(proc, fail_writer, "Buffered Output on EOF")
         send(proc, "?")
         send(proc, "force")
-        drain_stdout(proc)
-        fail_writer.write(f"timeout waiting for move: fen={fen}\n")
-        for l in recent_logs:
-            fail_writer.write(f"  > {l}\n")
         fail_writer.flush()
         return None
+
     score = request_lastscore(proc)
     if score is None:
         score = fallback_score[0]
@@ -268,9 +303,10 @@ def evaluate_position(proc: subprocess.Popen, fen: str, side: str, args, move_ti
     drain_stdout(proc)
     send(proc, "force")
     if score is None:
-        fail_writer.write(f"missing score after move: fen={fen}\n")
+        fail_writer.write(f"MISSING SCORE after move '{move_line}': fen={fen}\n")
         for l in recent_logs:
             fail_writer.write(f"  > {l}\n")
+        dump_engine_output(proc, fail_writer, "Debug Output")
         fail_writer.flush()
     return score
 

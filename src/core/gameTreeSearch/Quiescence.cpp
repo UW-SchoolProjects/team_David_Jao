@@ -96,6 +96,10 @@ extern uint64_t g_node_counter;
 int qsearch(Board &board, int alpha, int beta, int ply, EvalFn evalFn)
 {
   ++g_node_counter;
+  // Respect the main search time budget even inside quiescence.
+  if ((g_node_counter & 1023ULL) == 0ULL && search_time_expired()) {
+    return SCORE_TIME_ABORT;
+  }
   const int alphaOrig = alpha;
   const uint64_t key = board.zobrist_key;
 
@@ -206,7 +210,12 @@ int qsearch(Board &board, int alpha, int beta, int ply, EvalFn evalFn)
     if (!make_move(board, m))
       continue;
 
-    int score = -qsearch(board, -beta, -alpha, ply + 1, evalFn);
+    int child = qsearch(board, -beta, -alpha, ply + 1, evalFn);
+    if (child == SCORE_TIME_ABORT) {
+      unmake_move(board);
+      return SCORE_TIME_ABORT;
+    }
+    int score = -child;
 
     unmake_move(board);
 

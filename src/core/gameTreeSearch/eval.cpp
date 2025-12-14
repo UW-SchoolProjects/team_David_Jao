@@ -99,6 +99,12 @@ See LICENSE file for details.
 // Piece values indexed by PieceType (0..6).
 // Middlegame inflated to discourage forced early trades; endgame tapers toward
 // more standard values once forced-exchange risk is lower.
+static constexpr int TRADE_RISK_SCALE_PCT = 70; // soften trade risk impact
+static constexpr int MK_BONUS_MAX = 100;        // cap for mk bonus
+static constexpr int CONSTRAINT_BASE = 220;     // base for mk<=1 constraint bonus
+static constexpr int CONSTRAINT_CAP = 70;       // hard cap on constraint
+static constexpr int RICHNESS_BASE_MAX = 120;   // upper bound before scaling with material
+
 static constexpr int MG_PIECE_VALUE[7] = {
     0,    // EMPTY
     100,  // PAWN
@@ -452,12 +458,17 @@ static void gather_capture_candidates(const Board &board, Side side, std::vector
     if (epSq64 >= 0 && epSq64 < 64)
     {
       int epSq88 = SQ64_to_0x88(epSq64);
-      if (IS_ONBOARD(epSq88) && board.squares[epSq88] == EMPTY)
-      {
-      uint64_t epBB = 1ULL << epSq64;
+      if (IS_ONBOARD(epSq88) && board.squares[epSq88] == EMPTY) {
+        int capSq88 = epSq88 + (side == WHITE ? -16 : 16);
+        if (IS_ONBOARD(capSq88)) {
+          int capPiece = board.squares[capSq88];
+          if (capPiece != EMPTY && color_of(capPiece) != side && type_of(capPiece) == PAWN) {
+        uint64_t epBB = 1ULL << epSq64;
         if (pawn_attacks_from(fromSq, side) & epBB)
         {
           push_capture(fromSq, epSq64, PAWN, PAWN, true);
+        }
+          }
         }
       }
     }
@@ -628,19 +639,27 @@ static int static_exchange_eval_side(const Board &board, const CaptureCandidate 
     constexpr uint64_t FILE_H = 0x8080808080808080ULL;
     if (s == WHITE)
     {
-      uint64_t fromEast = (bbSq >> 7) & ~FILE_A; // came from file-1 (east capture)
-      uint64_t fromWest = (bbSq >> 9) & ~FILE_H; // came from file+1 (west capture)
+      uint64_t fromEast = (bbSq >> 9) & ~FILE_H; // from file+1
+      uint64_t fromWest = (bbSq >> 7) & ~FILE_A; // from file-1
       return fromEast | fromWest;
     }
     else
     {
-      uint64_t fromWest = (bbSq << 7) & ~FILE_H; // came from file+1
-      uint64_t fromEast = (bbSq << 9) & ~FILE_A; // came from file-1
+      uint64_t fromWest = (bbSq << 9) & ~FILE_A; // from file-1
+      uint64_t fromEast = (bbSq << 7) & ~FILE_H; // from file+1
       return fromWest | fromEast;
     }
   };
 
   auto attackers_of_side = [&](Side s, uint64_t occBB, uint64_t pieces[]) -> uint64_t {
+    uint64_t occAdj = occBB;
+    if (c.isEnPassant)
+    {
+      int capBehind88 = SQ64_to_0x88(toSq64) + (mover == WHITE ? -16 : 16);
+      int capBehind64 = IS_ONBOARD(capBehind88) ? BB_INDEX_FROM_0x88(capBehind88) : -1;
+      if (capBehind64 >= 0 && capBehind64 < 64)
+        occAdj &= ~(1ULL << capBehind64);
+    }
     uint64_t pawns = pieces[(static_cast<int>(s) << 3) | PAWN];
     uint64_t knights = pieces[(static_cast<int>(s) << 3) | KNIGHT];
     uint64_t bishops = pieces[(static_cast<int>(s) << 3) | BISHOP];
@@ -652,9 +671,9 @@ static int static_exchange_eval_side(const Board &board, const CaptureCandidate 
     uint64_t raw = 0ULL;
     raw |= pawn_attackers_to(toSq64, s) & pawns;
     raw |= knightAttacks[toSq64] & knights;
-    uint64_t bishopRay = bishopAttacks(toSq64, occBB);
+    uint64_t bishopRay = bishopAttacks(toSq64, occAdj);
     raw |= bishopRay & (bishops | queens);
-    uint64_t rookRay = rookAttacks(toSq64, occBB);
+    uint64_t rookRay = rookAttacks(toSq64, occAdj);
     raw |= rookRay & (rooks | queens);
     raw |= kingAttacks[toSq64] & kings;
     raw &= ~bbTarget; // exclude piece currently on target
@@ -926,10 +945,13 @@ int basicEvaluate(const Board &board)
         uint64_t lsb = cand & -cand;
         int to = __builtin_ctzll(lsb);
         cand ^= lsb;
-        uint64_t occ_to = (board.bb_occ & ~(1ULL << ksq)) | (1ULL << to);
+      uint64_t occ_to = board.bb_occ;
+      occ_to &= ~(1ULL << ksq);
+      occ_to &= ~(1ULL << to); // remove captured occupant on target
+      occ_to |= (1ULL << to);  // place king on target
         bool unsafe = false;
-        if (stmPawnAttacks & (1ULL << to))
-          unsafe = true;
+      if (stmPawnAttacks & (1ULL << to))
+        unsafe = true;
         if (!unsafe && (knightAttacks[to] & stmKnights))
           unsafe = true;
         if (!unsafe && stmKingBB && (kingAttacks[to] & stmKingBB))
@@ -953,8 +975,8 @@ int basicEvaluate(const Board &board)
   int mkBonus = std::max(0, (8 - mk) * 12);
   if (oppInCheck)
     mkBonus /= 2;
-  if (mkBonus > 120)
-    mkBonus = 120;
+  if (mkBonus > MK_BONUS_MAX)
+    mkBonus = MK_BONUS_MAX;
   scoreWhite += (stm == WHITE ? mkBonus : -mkBonus);
 
   if (!oppInCheck && mk <= 1)
@@ -964,11 +986,11 @@ int basicEvaluate(const Board &board)
                  bb_of(board, WQUEEN)) +
         popcount(bb_of(board, BPAWN) | bb_of(board, BKNIGHT) | bb_of(board, BBISHOP) | bb_of(board, BROOK) |
                  bb_of(board, BQUEEN));
-    int richnessScale = std::max(20, 120 - std::min(30, totalNonKing) * 3);
-    int base = (300 * mgPhaseScaled) / 100;
+    int richnessScale = std::max(20, RICHNESS_BASE_MAX - std::min(30, totalNonKing) * 3);
+    int base = (CONSTRAINT_BASE * mgPhaseScaled) / 100;
     int constraint = std::min(base, richnessScale);
-    if (constraint > 80)
-      constraint = 80;
+    if (constraint > CONSTRAINT_CAP)
+      constraint = CONSTRAINT_CAP;
     scoreWhite += (stm == WHITE ? constraint : -constraint);
   }
 
@@ -992,6 +1014,7 @@ int basicEvaluate(const Board &board)
       tradePenalty += attackerVal / 6;
   }
   tradePenalty = (tradePenalty * mgPhaseScaled) / 100;
+  tradePenalty = (tradePenalty * TRADE_RISK_SCALE_PCT) / 100;
   if (tradePenalty)
     scoreWhite += (stm == WHITE ? -tradePenalty : tradePenalty);
 
