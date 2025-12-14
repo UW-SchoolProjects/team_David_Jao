@@ -220,6 +220,9 @@ static inline void decay_history()
 // Node counter for instrumentation (shared with quiescence)
 uint64_t g_node_counter = 0ULL;
 
+// Repetition stack (zobrist keys per ply)
+static uint64_t repStack[MAX_PLY];
+
 // -------------- Time control state --------------
 static const TimeBudget *g_time_budget = nullptr;
 static std::chrono::steady_clock::time_point g_search_start;
@@ -575,6 +578,22 @@ int search(Board &board,
       count_side_nonking(board, WHITE) + count_side_nonking(board, BLACK);
   const bool pruneDisabledEndgame =
       is_clear_endgame_for_null(board) || totalNonKing <= 6;
+
+  // Repetition draw detection: if current key repeats earlier in the line and
+  // the 50-move counter is non-zero, treat as draw.
+  if (ply < MAX_PLY)
+    repStack[ply] = key;
+  if (board.halfmove_clock > 0)
+  {
+    for (int i = 0; i < ply; ++i)
+    {
+      if (repStack[i] == key)
+      {
+        TT.store(key, depth, 0, TTFlag::EXACT, Move(), ply);
+        return 0;
+      }
+    }
+  }
 
   int ttScore = 0;
   Move ttMove;
