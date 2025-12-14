@@ -583,17 +583,14 @@ int search(Board &board,
   // the 50-move counter is non-zero, treat as draw.
   if (ply < MAX_PLY)
     repStack[ply] = key;
-  if (board.halfmove_clock > 0)
+  for (int i = 0; i < ply; ++i)
   {
-    for (int i = 0; i < ply; ++i)
+    if (repStack[i] == key)
     {
-      if (repStack[i] == key)
-      {
-        // Small bias against repeating for the side to move to encourage escape.
-        int repScore = -2;
-        TT.store(key, depth, repScore, TTFlag::EXACT, Move(), ply);
-        return repScore;
-      }
+      // Bias against repetition to encourage escape.
+      int repScore = -10 - ply;
+      TT.store(key, depth, repScore, TTFlag::EXACT, Move(), ply);
+      return repScore;
     }
   }
 
@@ -1178,6 +1175,8 @@ Move getBestMove(Board &board, int maxDepth, EvalFn evalFn, const TimeBudget *ti
   g_time_soft_abort = false;
   g_time_check_counter = 0;
   g_soft_overrun_ms = 0;
+  for (int i = 0; i < MAX_PLY; ++i)
+    repStack[i] = 0ULL;
 
   for (int depth = 1; depth <= maxDepth; ++depth)
   {
