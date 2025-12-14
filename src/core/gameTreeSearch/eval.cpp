@@ -511,9 +511,7 @@ static int static_exchange_eval_side(const Board &board, const CaptureCandidate 
   const Side them = (mover == WHITE ? BLACK : WHITE);
   const int fromSq64 = c.from;
   const int toSq64 = c.to;
-  const int fromSq88 = SQ64_to_0x88(fromSq64);
   const int capSq88 = SQ64_to_0x88(toSq64);
-
   const int movingPieceFull = (static_cast<int>(mover) << 3) | static_cast<int>(c.mover);
   int victimPieceFull;
   int victimSq64 = toSq64;
