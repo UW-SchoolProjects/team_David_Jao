@@ -587,8 +587,8 @@ int search(Board &board,
   {
     if (repStack[i] == key)
     {
-      // Bias against repetition to encourage escape.
-      int repScore = -10 - ply;
+      // Heavy bias against repetition to encourage escape unless truly forced.
+      int repScore = -50 - ply;
       TT.store(key, depth, repScore, TTFlag::EXACT, Move(), ply);
       return repScore;
     }
