@@ -589,8 +589,10 @@ int search(Board &board,
     {
       if (repStack[i] == key)
       {
-        TT.store(key, depth, 0, TTFlag::EXACT, Move(), ply);
-        return 0;
+        // Small bias against repeating for the side to move to encourage escape.
+        int repScore = -2;
+        TT.store(key, depth, repScore, TTFlag::EXACT, Move(), ply);
+        return repScore;
       }
     }
   }
