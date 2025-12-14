@@ -86,6 +86,7 @@ See LICENSE file for details.
 
 #include "eval.h"
 #include <algorithm> // for std::min
+#include <climits>
 #include <cstdlib>   // for std::abs
 #include <vector>
 
