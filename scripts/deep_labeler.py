@@ -14,6 +14,7 @@ import select
 import shlex
 import subprocess
 import time
+from collections import deque
 from typing import Dict, Iterable, Optional, Tuple
 
 
@@ -26,8 +27,12 @@ def send(proc: subprocess.Popen, cmd: str) -> bool:
         return False
 
 
-def read_until(proc: subprocess.Popen, timeout: float, predicate) -> Optional[str]:
+def read_until(proc: subprocess.Popen, timeout: float, predicate, line_handler=None) -> Optional[str]:
     end = time.time() + timeout
+    bytes_read = 0
+    lines_read = 0
+    max_bytes = 1_000_000
+    max_lines = 10_000
     while time.time() < end:
         remaining = max(0.0, end - time.time())
         if proc.poll() is not None:
@@ -52,9 +57,18 @@ def read_until(proc: subprocess.Popen, timeout: float, predicate) -> Optional[st
                     line = line.decode(errors="ignore")
                 except Exception:
                     continue
+            bytes_read += len(line)
+            lines_read += 1
+            if bytes_read > max_bytes or lines_read > max_lines:
+                return None
             line = line.strip()
             if not line:
                 continue
+            if line_handler:
+                try:
+                    line_handler(line)
+                except Exception:
+                    pass
             if predicate(line):
                 return line
     return None
@@ -64,6 +78,43 @@ def query_prefix(proc: subprocess.Popen, cmd: str, prefix: str, timeout: float =
     if not send(proc, cmd):
         return None
     return read_until(proc, timeout, lambda line: line.startswith(prefix))
+
+
+def parse_score_token(token: str) -> Optional[int]:
+    """Parse a score token (cp or mate notation) into an int, clamped to [-30000, 30000]."""
+    t = token.strip()
+    if not t:
+        return None
+    tl = t.lower()
+    if tl == "none":
+        return None
+    val: Optional[int] = None
+
+    parts = tl.split()
+    if parts and parts[0] == "mate":
+        try:
+            ply = int(parts[1])
+        except (IndexError, ValueError):
+            return None
+        sign = -1 if ply < 0 else 1
+        dist = abs(ply)
+        val = sign * max(1, 30000 - min(dist, 29999))
+    elif tl.startswith("+m") or tl.startswith("-m"):
+        sign = -1 if tl.startswith("-m") else 1
+        try:
+            dist = int(tl[2:])
+        except ValueError:
+            return None
+        val = sign * max(1, 30000 - min(abs(dist), 29999))
+    else:
+        try:
+            val = int(t.lstrip("+"))
+        except ValueError:
+            return None
+
+    if val is None:
+        return None
+    return max(-30000, min(30000, val))
 
 
 def start_engine(cmd: str, extra_env: Optional[dict] = None) -> subprocess.Popen:
@@ -130,44 +181,7 @@ def request_lastscore(proc: subprocess.Popen) -> Optional[int]:
     if line is None:
         return None
     payload = line[len("lastscore ") :].strip()
-    if not payload:
-        return None
-    token = payload.strip()
-    tl = token.lower()
-    if tl == "none":
-        return None
-    val: Optional[int] = None
-    parts = tl.split()
-    if parts and parts[0] == "mate":
-        try:
-            dist = abs(int(parts[1]))
-        except (IndexError, ValueError):
-            return None
-        val = max(1, 30000 - min(dist, 29999))
-    elif tl.startswith("+m") and len(tl) > 2:
-        try:
-            dist = int(tl[2:])
-        except ValueError:
-            return None
-        val = max(1, 30000 - min(dist, 29999))
-    elif tl.startswith("-m") and len(tl) > 2:
-        try:
-            dist = int(tl[2:])
-        except ValueError:
-            return None
-        val = -max(1, 30000 - min(dist, 29999))
-    else:
-        try:
-            val = int(token.lstrip("+"))
-        except ValueError:
-            return None
-    if val is None:
-        return None
-    if val < -30000:
-        val = -30000
-    if val > 30000:
-        val = 30000
-    return val
+    return parse_score_token(payload)
 
 
 def drain_stderr(proc: subprocess.Popen, fail_writer):
@@ -201,35 +215,99 @@ def drain_stdout(proc: subprocess.Popen):
         pass
 
 
-def evaluate_position(proc: subprocess.Popen, fen: str, side: str, args, move_timeout: float) -> Optional[int]:
+def dump_engine_output(proc: subprocess.Popen, fail_writer, header: str):
+    """Reads any buffered stdout/stderr from the engine without blocking (for diagnostics)."""
+    fail_writer.write(f"--- {header} ---\n")
+    def drain_stream(stream, label: str):
+        if not stream:
+            fail_writer.write(f"   [{label}: closed]\n")
+            return
+        try:
+            while True:
+                ready, _, _ = select.select([stream], [], [], 0)
+                if not ready:
+                    break
+                line = stream.readline()
+                if not line:
+                    break
+                fail_writer.write(f"   [{label}] {line.strip()}\n")
+        except Exception as e:
+            fail_writer.write(f"   [{label} read error: {e}]\n")
+
+    drain_stream(proc.stdout, "stdout")
+    drain_stream(proc.stderr, "stderr")
+    fail_writer.write("--------------------------------\n")
+
+
+def evaluate_position(proc: subprocess.Popen, fen: str, side: str, args, move_timeout: float, fail_writer) -> Optional[int]:
     drain_stdout(proc)
     if not send(proc, f"setboard {fen}"):
+        fail_writer.write(f"FAIL: 'setboard' rejected for FEN: {fen}\n")
         return None
 
-    if args.deep_depth > 0 and not send(proc, f"sd {args.deep_depth}"):
-        return None
+    if args.deep_depth > 0:
+        send(proc, f"sd {args.deep_depth}")
     if args.deep_time_ms > 0:
         st_seconds = max(1, int(round(args.deep_time_ms / 1000.0)))
-        if not send(proc, f"st {st_seconds}"):
-            return None
+        send(proc, f"st {st_seconds}")
     if args.clock_cs > 0:
         send(proc, f"time {args.clock_cs}")
         send(proc, f"otim {args.clock_cs}")
 
+    # Track fallback score from thinking output and a short log for debugging.
+    fallback_score = [None]
+    recent_logs = deque(maxlen=20)
+
+    def handle_output(line: str) -> None:
+        recent_logs.append(line)
+        parts = line.split()
+        if len(parts) >= 2 and parts[0].isdigit():
+            s = parse_score_token(parts[1])
+            if s is not None:
+                fallback_score[0] = s
+
     stm = side.strip().lower()
     go_cmd = "white" if stm.startswith("w") else "black"
     if not send(proc, go_cmd):
+        fail_writer.write("FAIL: 'go' command rejected.\n")
         return None
-    move_line = read_until(proc, move_timeout, lambda l: l.startswith("move "))
+
+    start_time = time.time()
+    move_line = read_until(
+        proc,
+        move_timeout,
+        lambda l: l.startswith("move ") or l in ("1-0", "0-1", "1/2-1/2"),
+        line_handler=handle_output,
+    )
+    elapsed = time.time() - start_time
+
     if move_line is None:
+        exit_code = proc.poll()
+        if exit_code is not None:
+            fail_writer.write(f"CRASH: engine exited (code {exit_code}) after {elapsed:.2f}s on FEN: {fen}\n")
+        elif elapsed >= move_timeout:
+            fail_writer.write(f"TIMEOUT: >{elapsed:.2f}s (limit {move_timeout}s) on FEN: {fen}\n")
+            dump_engine_output(proc, fail_writer, "Buffered Output at Timeout")
+        else:
+            fail_writer.write(f"ERROR: engine silent/EOF after {elapsed:.2f}s on FEN: {fen}\n")
+            dump_engine_output(proc, fail_writer, "Buffered Output on EOF")
         send(proc, "?")
         send(proc, "force")
-        drain_stdout(proc)
+        fail_writer.flush()
         return None
+
     score = request_lastscore(proc)
+    if score is None:
+        score = fallback_score[0]
     send(proc, "?")
     drain_stdout(proc)
     send(proc, "force")
+    if score is None:
+        fail_writer.write(f"MISSING SCORE after move '{move_line}': fen={fen}\n")
+        for l in recent_logs:
+            fail_writer.write(f"  > {l}\n")
+        dump_engine_output(proc, fail_writer, "Debug Output")
+        fail_writer.flush()
     return score
 
 
@@ -322,7 +400,7 @@ def main():
             else:
                 default_side = "w"
             side = row.get("side_to_move") or default_side
-            score = evaluate_position(proc, fen, side, args, args.move_timeout)
+            score = evaluate_position(proc, fen, side, args, args.move_timeout, fail_writer)
             if score is None:
                 fail_writer.write(f"{idx}: eval_fail\n")
                 if idx % 100 == 0:

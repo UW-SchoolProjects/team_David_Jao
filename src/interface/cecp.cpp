@@ -106,6 +106,7 @@ See LICENSE file for details.
 
 #include <string> // Required for std::to_string()
 #include <iostream> // For printing output
+#include <chrono>
 
 // ---------------------------
 // Small helpers
@@ -129,6 +130,11 @@ static void log_board_fen(const Board &b, const char *label = nullptr) {
 static inline void log_msg(const std::string &) {}
 static inline void log_board_fen(const Board &, const char * = nullptr) {}
 #endif
+
+// Unconditional diagnostic logging to stderr (safe for protocol).
+static inline void diag_log(const std::string &msg) {
+    std::cerr << "[diag] " << msg << std::endl;
+}
 
 static inline int opposite_side(int s) {
     return s == WHITE ? BLACK : WHITE;
@@ -305,6 +311,21 @@ static Move search_best_move(EngineSession &sess) {
     bool capture_heavy = false;
     gather_root_context(sess.board, in_check, capture_heavy);
 
+    {
+        Board bcopy = sess.board;
+        MoveList rootMoves;
+        generate_variant_moves(bcopy, rootMoves);
+        bool forcedCaptures = (rootMoves.count > 0) && rootMoves.moves[0].isCapture();
+        diag_log("root_moves=" + std::to_string(rootMoves.count) +
+                 " forced_captures=" + std::to_string(forcedCaptures ? 1 : 0) +
+                 " in_check=" + std::to_string(in_check ? 1 : 0) +
+                 " capture_heavy=" + std::to_string(capture_heavy ? 1 : 0) +
+                 " stm=" + std::string(sess.board.side == WHITE ? "w" : "b") +
+                 " my_time_ms=" + std::to_string(sess.my_time_ms) +
+                 " time_per_move_ms=" + std::to_string(sess.time_per_move_ms) +
+                 " max_depth=" + std::to_string(sess.max_depth));
+    }
+
     int remaining = sess.my_time_ms > 0 ? sess.my_time_ms : 50;
     int moves_left = sess.moves_per_session > 0 ? sess.moves_per_session : 30;
     TimeBudget budget = compute_time_budget(remaining,
@@ -314,8 +335,20 @@ static Move search_best_move(EngineSession &sess) {
                                             in_check,
                                             capture_heavy);
 
+    auto diag_start = std::chrono::steady_clock::now();
     int rootScore = 0;
+    diag_log("calling getBestMove");
     Move best = getBestMove(sess.board, searchDepth, basicEvaluate, &budget, &rootScore);
+    auto diag_end = std::chrono::steady_clock::now();
+    auto diag_elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(diag_end - diag_start).count();
+    std::string bestStr = best.isNull() ? "<null>" : move_to_uci(best);
+    diag_log("search depth=" + std::to_string(searchDepth) +
+             " budget_soft=" + std::to_string(budget.soft_ms) +
+             " budget_hard=" + std::to_string(budget.hard_ms) +
+             " elapsed_ms=" + std::to_string(diag_elapsed_ms) +
+             " score=" + std::to_string(rootScore) +
+             " best=" + bestStr +
+             (rootScore == SCORE_TIME_ABORT ? " (TIME_ABORT)" : ""));
     if (rootScore != SCORE_TIME_ABORT) {
         sess.last_root_score = rootScore;
         sess.has_root_score = true;
@@ -325,6 +358,7 @@ static Move search_best_move(EngineSession &sess) {
         MoveList legal;
         validMoveGeneration(sess.board, static_cast<Side>(sess.board.side), legal, /*captureOnly=*/false);
         if (legal.count > 0) best = legal.moves[0];
+        diag_log("time abort fallback best=" + (best.isNull() ? std::string("<null>") : move_to_uci(best)));
     }
 #ifdef ENGINE_LOGGING
     auto move_end = std::chrono::steady_clock::now();
@@ -421,9 +455,30 @@ static void do_engine_move(EngineSession &sess) {
     Move best = search_best_move(sess);
 
     if (best.isNull()) {
-        log_msg("No legal move to play (null move).");
-        // No legal moves: mate or stalemate; GUI will send 'result'.
-    return;
+        // Search failed to return a move. Fall back to playing any legal move so
+        // protocol clients (xboard/samplers) don't stall waiting forever.
+        MoveList fallbackMoves;
+        generate_variant_moves(sess.board, fallbackMoves);
+        if (fallbackMoves.count == 0) {
+            log_msg("No legal move to play (null move).");
+            // No legal moves: mate or stalemate. Emit a null move and surface a
+            // deterministic terminal score so protocol clients don't hang.
+            bool in_check = isInCheck(sess.board, static_cast<Side>(sess.board.side));
+            sess.last_root_score = in_check ? -30000 : 0;
+            sess.has_root_score = true;
+            diag_log(std::string("terminal position: in_check=") +
+                     (in_check ? "1" : "0") +
+                     " score=" + std::to_string(sess.last_root_score));
+            std::cout << "move 0000" << std::endl;
+            return;
+        }
+        best = fallbackMoves.moves[0];
+        if (!sess.has_root_score) {
+            // Provide a deterministic score for tooling that relies on david_lastscore.
+            sess.last_root_score = basicEvaluate(sess.board);
+            sess.has_root_score = true;
+        }
+        diag_log("fallback_move=" + move_to_uci(best) + " (search returned null)");
   }
 
   std::string s = move_to_uci(best);
