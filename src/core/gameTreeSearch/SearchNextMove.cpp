@@ -588,14 +588,18 @@ int search(Board &board,
     ttProbedBase = true;
     if (TT.probe(key, depth, alpha, beta, ply, ttScore, ttMove))
     {
-      // Maintain PV on TT hit
-      pvLength[ply] = 0;
-      if (!ttMove.isNull())
+      const bool rootNullHit = (ply == 0 && ttMove.isNull());
+      if (!rootNullHit)
       {
-        pvTable[ply][0] = ttMove;
-        pvLength[ply] = 1;
+        // Maintain PV on TT hit
+        pvLength[ply] = 0;
+        if (!ttMove.isNull())
+        {
+          pvTable[ply][0] = ttMove;
+          pvLength[ply] = 1;
+        }
+        return ttScore;
       }
-      return ttScore;
     }
   }
 
@@ -619,14 +623,18 @@ int search(Board &board,
   {
     if (TT.probe(key, effectiveDepth, alpha, beta, ply, ttScore, ttMove))
     {
-      // Maintain PV on TT hit
-      pvLength[ply] = 0;
-      if (!ttMove.isNull())
+      const bool rootNullHit = (ply == 0 && ttMove.isNull());
+      if (!rootNullHit)
       {
-        pvTable[ply][0] = ttMove;
-        pvLength[ply] = 1;
+        // Maintain PV on TT hit
+        pvLength[ply] = 0;
+        if (!ttMove.isNull())
+        {
+          pvTable[ply][0] = ttMove;
+          pvLength[ply] = 1;
+        }
+        return ttScore;
       }
-      return ttScore;
     }
   }
 
