@@ -362,8 +362,8 @@ static inline uint64_t pawn_attacks_from(int sq64, Side side)
   }
   else
   {
-    uint64_t se = (bb & ~FILE_A) >> 7; // from not-A file to SE
-    uint64_t sw = (bb & ~FILE_H) >> 9; // from not-H file to SW
+    uint64_t se = (bb & ~FILE_H) >> 7; // from not-H file to SE
+    uint64_t sw = (bb & ~FILE_A) >> 9; // from not-A file to SW
     return se | sw;
   }
 }
@@ -400,7 +400,8 @@ static uint64_t attack_map(const Board &board, Side side)
   accumulate(queens, [&](int sq) { return bishopAttacks(sq, occ) | rookAttacks(sq, occ); });
 
   uint64_t kings = bb_of(board, (static_cast<int>(side) << 3) | KING);
-  accumulate(kings, [&](int sq) { return kingAttacks[sq]; });
+  uint64_t ownOcc = occ_side(board, side);
+  accumulate(kings, [&](int sq) { return kingAttacks[sq] & ~ownOcc; });
 
   return attacks;
 }
@@ -450,10 +451,14 @@ static void gather_capture_candidates(const Board &board, Side side, std::vector
     add_capture(fromSq, captures, PAWN);
     if (epSq64 >= 0 && epSq64 < 64)
     {
-      uint64_t epBB = 1ULL << epSq64;
-      if (pawn_attacks_from(fromSq, side) & epBB)
+      int epSq88 = SQ64_to_0x88(epSq64);
+      if (IS_ONBOARD(epSq88) && board.squares[epSq88] == EMPTY)
       {
-        push_capture(fromSq, epSq64, PAWN, PAWN, true);
+      uint64_t epBB = 1ULL << epSq64;
+        if (pawn_attacks_from(fromSq, side) & epBB)
+        {
+          push_capture(fromSq, epSq64, PAWN, PAWN, true);
+        }
       }
     }
   }
@@ -925,7 +930,7 @@ int basicEvaluate(const Board &board)
         cand ^= lsb;
         uint64_t occ_to = (board.bb_occ & ~(1ULL << ksq)) | (1ULL << to);
         bool unsafe = false;
-        if ((stmPawnAttacks >> to) & 1ULL)
+        if (stmPawnAttacks & (1ULL << to))
           unsafe = true;
         if (!unsafe && (knightAttacks[to] & stmKnights))
           unsafe = true;
