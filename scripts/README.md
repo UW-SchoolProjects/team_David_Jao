@@ -17,5 +17,18 @@
 - Randomization: plays a few random legal plies at game start using `david_moves` + `usermove` to diversify openings.
 - Output schema: `fen, eval_cp, phase, ply, side_to_move, game_id, move` (CSV, optional gzip).
 
+### Deep labeler (`deep_labeler.py`)
+- Purpose: run depth+2 / ~3× time over sampled positions to produce higher-quality labels.
+- Recommended invocation:
+  ```bash
+  python3 scripts/deep_labeler.py \
+    --input build/selfplay_positions.csv.gz \
+    --output build/deep_labeled_positions.csv.gz \
+    --engine-cmd ./program \
+    --shallow-depth 6
+  ```
+- Defaults: deep depth = shallow+2 (or deep_time_ms = move_time_ms*3), tanh scale 400, workers = min(cpu_count, 8).
+- Output schema extends the input with `eval_deep_cp` and `eval_deep_norm`; failures logged to `build/deep_label_failures.log`.
+
 ### Blitz gauntlet (`blitz_gauntlet.sh`)
 - Stresses new builds vs a reference at 1+0 (see inline comments).
