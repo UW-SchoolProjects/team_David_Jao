@@ -92,11 +92,15 @@ See LICENSE file for details.
 #include "../nextMoveGeneration/move.h"
 #include "../nextMoveGeneration/attacks.h"
 
-#if __has_include("weights_evaluated.h")
-#include "weights_evaluated.h"
-#define HAVE_TUNED_WEIGHTS 1
+#if defined(__has_include)
+#  if __has_include("weights_evaluated.h")
+#    include "weights_evaluated.h"
+#    define HAVE_TUNED_WEIGHTS 1
+#  else
+#    define HAVE_TUNED_WEIGHTS 0
+#  endif
 #else
-#define HAVE_TUNED_WEIGHTS 0
+#  define HAVE_TUNED_WEIGHTS 0
 #endif
 
 // -----------------------------------------------------------------------------
@@ -348,6 +352,8 @@ static const int DEFAULT_EG_PST[7][64] = {
         -1, 0, 0, 1, 1, 0, 0, -1}};
 
 #if HAVE_TUNED_WEIGHTS
+static_assert(sizeof(TUNED_PST_MG) == sizeof(int) * 7 * 64, "TUNED_PST_MG must be 7x64");
+static_assert(sizeof(TUNED_PST_EG) == sizeof(int) * 7 * 64, "TUNED_PST_EG must be 7x64");
 static const int (&MG_PST)[7][64] = TUNED_PST_MG;
 static const int (&EG_PST)[7][64] = TUNED_PST_EG;
 #else
@@ -918,6 +924,18 @@ int basicEvaluate(const Board &board)
     egScore -= BISHOP_PAIR_BONUS;
   }
 
+  if (KING_PROX_BONUS != 0 && kingSq[WHITE] != -1 && kingSq[BLACK] != -1)
+  {
+    int dist = manhattan(kingSq[WHITE], kingSq[BLACK]);
+    int prox = std::max(0, 10 - dist);
+    if (prox > 0)
+    {
+      int egWeight = PHASE_TOTAL - phase;
+      int proxTerm = (prox * egWeight * KING_PROX_BONUS) / std::max(1, PHASE_TOTAL);
+      egScore += proxTerm;
+    }
+  }
+
   // --- Phase tapered blend ---
   int scoreWhite =
       (mgScore * phase + egScore * (PHASE_TOTAL - phase)) / std::max(1, PHASE_TOTAL);
@@ -1167,15 +1185,6 @@ int basicEvaluate(const Board &board)
   // Convert from White POV to side-to-move POV:
   // Positive = good for side to move.
   int stmScore = (board.side == WHITE) ? scoreWhite : -scoreWhite;
-
-  if (KING_PROX_BONUS != 0 && kingSq[WHITE] != -1 && kingSq[BLACK] != -1)
-  {
-    int dist = manhattan(kingSq[WHITE], kingSq[BLACK]);
-    int prox = std::max(0, 10 - dist);
-    int egWeightPct = ((PHASE_TOTAL - phase) * 100) / std::max(1, PHASE_TOTAL);
-    int proxTerm = (prox * egWeightPct * KING_PROX_BONUS) / 100;
-    stmScore += proxTerm;
-  }
 
   stmScore += EVAL_BIAS;
 
