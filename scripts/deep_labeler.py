@@ -314,7 +314,7 @@ def main():
         args.deep_depth = args.shallow_depth + 2
     if args.deep_time_ms <= 0:
         args.deep_time_ms = int(args.move_time_ms * args.time_mult)
-    args.clock_cs = max(1, args.deep_time_ms // 10)
+    args.clock_cs = max(200, int(round(args.deep_time_ms * 2)))  # give a generous clock per position
 
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
     os.makedirs(os.path.dirname(os.path.abspath(args.fail_log)), exist_ok=True)
