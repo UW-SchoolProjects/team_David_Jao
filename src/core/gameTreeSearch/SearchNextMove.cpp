@@ -576,7 +576,6 @@ int search(Board &board,
   const bool pruneDisabledEndgame =
       is_clear_endgame_for_null(board) || totalNonKing <= 6;
 
-  // Repetition draw detection: if current key repeats earlier in the line and
   int ttScore = 0;
   Move ttMove;
   if (TT.probe(key, depth, alpha, beta, ply, ttScore, ttMove))
