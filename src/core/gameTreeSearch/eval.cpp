@@ -908,6 +908,15 @@ int basicEvaluate(const Board &board)
   Side stm = static_cast<Side>(board.side);
   Side opp = (stm == WHITE ? BLACK : WHITE);
 
+  int matScore[2] = {0, 0};
+  for (int s = 0; s < 2; ++s)
+  {
+    for (int pt = PAWN; pt <= QUEEN; ++pt)
+    {
+      matScore[s] += pieceCount[s][pt] * MG_PIECE_VALUE[pt];
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Opponent king mobility (Mk) and tactical bonuses
   // ---------------------------------------------------------------------------
@@ -1082,6 +1091,18 @@ int basicEvaluate(const Board &board)
     int boostedMk = mkBonus / 2; // extra weight beyond the base Mk bonus
     scoreWhite += (stm == WHITE ? boostedMk : -boostedMk);
     scoreWhite += (stm == WHITE ? kingAttackBonus : -kingAttackBonus);
+  }
+
+  // If we have a clear material advantage in late phase, encourage king aggression.
+  if (kingSq[stm] != -1 && kingSq[opp] != -1)
+  {
+    int matDiff = matScore[stm] - matScore[opp];
+    if (phase <= EG_PHASE_THRESHOLD + 2 && matDiff >= 400)
+    {
+      int kingDist = manhattan(kingSq[stm], kingSq[opp]);
+      int aggression = std::max(0, 12 - kingDist) * 6;
+      scoreWhite += (stm == WHITE ? aggression : -aggression);
+    }
   }
 
   // Encourage advancing pawns toward promotion (White POV).
