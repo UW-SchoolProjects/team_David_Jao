@@ -38,7 +38,7 @@ def read_until(proc: subprocess.Popen, timeout: float, predicate) -> Optional[st
             return None
         if not ready:
             continue
-        while True:
+        for _ in range(100):
             try:
                 line = proc.stdout.readline()
             except Exception:
@@ -74,7 +74,7 @@ def start_engine(cmd: str, extra_env: Optional[dict] = None) -> subprocess.Popen
         shlex.split(cmd),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
         errors="replace",
@@ -84,8 +84,11 @@ def start_engine(cmd: str, extra_env: Optional[dict] = None) -> subprocess.Popen
     try:
         import fcntl
 
-        flags = fcntl.fcntl(proc.stdout.fileno(), fcntl.F_GETFL)
-        fcntl.fcntl(proc.stdout.fileno(), fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        out_flags = fcntl.fcntl(proc.stdout.fileno(), fcntl.F_GETFL)
+        fcntl.fcntl(proc.stdout.fileno(), fcntl.F_SETFL, out_flags | os.O_NONBLOCK)
+        if proc.stderr:
+            err_flags = fcntl.fcntl(proc.stderr.fileno(), fcntl.F_GETFL)
+            fcntl.fcntl(proc.stderr.fileno(), fcntl.F_SETFL, err_flags | os.O_NONBLOCK)
     except Exception:
         pass
     return proc
@@ -94,19 +97,42 @@ def start_engine(cmd: str, extra_env: Optional[dict] = None) -> subprocess.Popen
 def handshake(proc: subprocess.Popen, args) -> bool:
     if not send(proc, "xboard"):
         return False
-    send(proc, "protover 2")
-    feat_ok = read_until(proc, timeout=2.0, predicate=lambda l: l.startswith("feature ") or l == "done=1")
-    send(proc, "new")
-    send(proc, "force")
+    if not send(proc, "protover 2"):
+        return False
+    done = False
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        line = read_until(proc, timeout=max(0.0, deadline - time.time()), predicate=lambda l: l.startswith("feature") or l.startswith("done"))
+        if line is None:
+            break
+        if "done=1" in line or line.strip() == "done=1":
+            done = True
+            break
+    if not done:
+        return False
+    if not send(proc, "new"):
+        return False
+    if not send(proc, "force"):
+        return False
     if args.deep_depth > 0:
         send(proc, f"sd {args.deep_depth}")
     if args.deep_time_ms > 0:
-        send(proc, f"stms {args.deep_time_ms}")
+        st_seconds = max(1, int(round(args.deep_time_ms / 1000.0)))
+        send(proc, f"st {st_seconds}")
     send(proc, f"time {args.clock_cs}")
     send(proc, f"otim {args.clock_cs}")
-    # Verify custom command responds
-    probe = query_prefix(proc, "david_fen", "fen ", timeout=1.0)
-    return (feat_ok is not None) and (probe is not None)
+    probe = query_prefix(proc, "david_fen", "fen ", timeout=1.5)
+    return probe is not None
+
+
+def restart_engine(args, fail_writer):
+    proc = start_engine(args.engine_cmd)
+    if not handshake(proc, args):
+        fail_writer.write("handshake failed\n")
+        fail_writer.flush()
+        proc.kill()
+        return None
+    return proc
 
 
 def request_lastscore(proc: subprocess.Popen) -> Optional[int]:
@@ -116,28 +142,83 @@ def request_lastscore(proc: subprocess.Popen) -> Optional[int]:
     payload = line[len("lastscore ") :].strip()
     if not payload:
         return None
-    lower = payload.lower()
-    if lower == "none":
+    token = payload.strip()
+    tl = token.lower()
+    if tl == "none":
         return None
-    parts = lower.split()
     val: Optional[int] = None
-    if parts[0] == "mate" and len(parts) >= 2:
-        sign = -1 if parts[1].startswith("-") else 1
-        val = sign * 30000
-    else:
+    parts = tl.split()
+    if parts and parts[0] == "mate":
         try:
-            cleaned = parts[0].lstrip("+")
-            val = int(cleaned)
+            ply = int(parts[1])
+        except (IndexError, ValueError):
+            return None
+        sign = -1 if ply < 0 else 1
+        dist = abs(ply)
+        val = max(1, 30000 - min(dist, 29999)) * sign
+    elif tl.startswith(("+m", "-m")) and len(tl) > 2:
+        sign = -1 if tl[0] == "-" else 1
+        try:
+            dist = int(tl[2:])
         except ValueError:
             return None
-    if val is None or val < -30000 or val > 30000:
+        val = max(1, 30000 - min(dist, 29999)) * sign
+    else:
+        try:
+            val = int(token.lstrip("+"))
+        except ValueError:
+            return None
+    if val is None:
         return None
+    if val < -30000:
+        val = -30000
+    if val > 30000:
+        val = 30000
     return val
 
 
+def drain_stderr(proc: subprocess.Popen, fail_writer):
+    if not proc.stderr:
+        return
+    try:
+        while True:
+            ready, _, _ = select.select([proc.stderr], [], [], 0)
+            if not ready:
+                break
+            line = proc.stderr.readline()
+            if not line:
+                break
+            fail_writer.write(f"stderr: {line.strip()}\n")
+    except Exception:
+        pass
+
+
+def drain_stdout(proc: subprocess.Popen):
+    if not proc.stdout:
+        return
+    try:
+        while True:
+            ready, _, _ = select.select([proc.stdout], [], [], 0)
+            if not ready:
+                break
+            line = proc.stdout.readline()
+            if not line:
+                break
+    except Exception:
+        pass
+
+
 def evaluate_position(proc: subprocess.Popen, fen: str, side: str, args, move_timeout: float) -> Optional[int]:
+    drain_stdout(proc)
     if not send(proc, f"setboard {fen}"):
         return None
+
+    if args.deep_depth > 0 and not send(proc, f"sd {args.deep_depth}"):
+        return None
+    if args.deep_time_ms > 0:
+        st_seconds = max(1, int(round(args.deep_time_ms / 1000.0)))
+        if not send(proc, f"st {st_seconds}"):
+            return None
 
     stm = side.strip().lower()
     go_cmd = "white" if stm.startswith("w") else "black"
@@ -145,8 +226,10 @@ def evaluate_position(proc: subprocess.Popen, fen: str, side: str, args, move_ti
         return None
     move_line = read_until(proc, move_timeout, lambda l: l.startswith("move "))
     if move_line is None:
+        send(proc, "force")
         return None
     score = request_lastscore(proc)
+    send(proc, "force")
     return score
 
 
@@ -162,7 +245,7 @@ def open_reader(path: str):
 
 def open_writer(path: str):
     if path.endswith(".gz"):
-        return gzip.open(path, "wt", newline="", encoding="utf-8")
+        return gzip.open(path, "wt", encoding="utf-8")
     return open(path, "w", newline="", encoding="utf-8")
 
 
@@ -195,11 +278,8 @@ def main():
     os.makedirs(os.path.dirname(os.path.abspath(args.fail_log)), exist_ok=True)
 
     fail_writer = open(args.fail_log, "w")
-    proc = start_engine(args.engine_cmd)
-    if not handshake(proc, args):
-        fail_writer.write("handshake failed\n")
-        fail_writer.flush()
-        proc.kill()
+    proc = restart_engine(args, fail_writer)
+    if proc is None:
         fail_writer.close()
         return
 
@@ -219,6 +299,17 @@ def main():
 
         for idx, row in enumerate(reader):
             total += 1
+            if proc.poll() is not None:
+                fail_writer.write(f"{idx}: engine_restart\n")
+                fail_writer.flush()
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                proc = restart_engine(args, fail_writer)
+                if proc is None:
+                    break
+            drain_stderr(proc, fail_writer)
             fen = (row.get("fen") or "").strip()
             if not fen:
                 fail_writer.write(f"{idx}: missing fen\n")
