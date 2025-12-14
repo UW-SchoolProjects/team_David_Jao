@@ -397,9 +397,6 @@ static uint64_t attack_map(const Board &board, Side side)
   uint64_t queens = bb_of(board, (static_cast<int>(side) << 3) | QUEEN);
   accumulate(queens, [&](int sq) { return bishopAttacks(sq, occ) | rookAttacks(sq, occ); });
 
-  uint64_t kings = bb_of(board, (static_cast<int>(side) << 3) | KING);
-  accumulate(kings, [&](int sq) { return kingAttacks[sq]; });
-
   return attacks;
 }
 
@@ -446,7 +443,7 @@ static void gather_capture_candidates(const Board &board, Side side, std::vector
     pawns ^= lsb;
     uint64_t captures = pawn_attacks_from(fromSq, side) & oppOcc;
     add_capture(fromSq, captures, PAWN);
-    if (epSq64 != -1)
+    if (epSq64 >= 0 && epSq64 < 64)
     {
       uint64_t epBB = 1ULL << epSq64;
       if (pawn_attacks_from(fromSq, side) & epBB)
@@ -564,20 +561,34 @@ static int static_exchange_eval_side(const Board &board, const CaptureCandidate 
   for (int i = 0; i < 16; ++i)
     bb[i] = board.bb_piece[i];
 
-  auto clear_bit = [](uint64_t &b, int sq64) { b &= ~(1ULL << sq64); };
-  auto set_bit = [](uint64_t &b, int sq64) { b |= (1ULL << sq64); };
+  auto clear_bit = [](uint64_t &b, int sq64) {
+    if (sq64 >= 0 && sq64 < 64)
+      b &= ~(1ULL << sq64);
+  };
+  auto set_bit = [](uint64_t &b, int sq64) {
+    if (sq64 >= 0 && sq64 < 64)
+      b |= (1ULL << sq64);
+  };
+  auto clear_occ = [&](int sq64) {
+    if (sq64 >= 0 && sq64 < 64)
+      occ &= ~(1ULL << sq64);
+  };
+  auto set_occ = [&](int sq64) {
+    if (sq64 >= 0 && sq64 < 64)
+      occ |= (1ULL << sq64);
+  };
 
   // Remove moving piece from origin
   clear_bit(bb[movingPieceFull], fromSq64);
-  occ &= ~(1ULL << fromSq64);
+  clear_occ(fromSq64);
 
   // Remove captured victim (may differ from target square in en passant)
   clear_bit(bb[victimPieceFull], victimSq64);
-  occ &= ~(1ULL << victimSq64);
+  clear_occ(victimSq64);
 
   // Place moving piece on target square
   set_bit(bb[movingPieceFull], toSq64);
-  occ |= (1ULL << toSq64);
+  set_occ(toSq64);
 
   int gains[32];
   int captureValue = piece_value(type_of(victimPieceFull));
@@ -867,41 +878,45 @@ int basicEvaluate(const Board &board)
     if (oppKingBB)
     {
       int ksq = __builtin_ctzll(oppKingBB);
-      oppInCheck = (stmAttacks & oppKingBB) != 0ULL;
+      oppInCheck = (stmAttacks & (1ULL << ksq)) != 0ULL;
       uint64_t raw = kingAttacks[ksq];
       raw &= ~occ_side(board, opp);
-      raw &= ~stmAttacks;
-      uint64_t occ_after = board.bb_occ & ~(1ULL << ksq);
       uint64_t legal = 0ULL;
       uint64_t cand = raw;
-      uint64_t stmRookQueen = bb_of(board, (static_cast<int>(stm) << 3) | ROOK) |
-                             bb_of(board, (static_cast<int>(stm) << 3) | QUEEN);
-      uint64_t stmBishopQueen = bb_of(board, (static_cast<int>(stm) << 3) | BISHOP) |
-                                bb_of(board, (static_cast<int>(stm) << 3) | QUEEN);
+      uint64_t stmPawns = bb_of(board, (static_cast<int>(stm) << 3) | PAWN);
+      uint64_t stmPawnAttacks = 0ULL;
+      while (stmPawns)
+      {
+        uint64_t lsb = stmPawns & -stmPawns;
+        int sq = __builtin_ctzll(lsb);
+        stmPawns ^= lsb;
+        stmPawnAttacks |= pawn_attacks_from(sq, stm);
+      }
+      uint64_t stmKnights = bb_of(board, (static_cast<int>(stm) << 3) | KNIGHT);
+      uint64_t stmBishops = bb_of(board, (static_cast<int>(stm) << 3) | BISHOP);
+      uint64_t stmRooks = bb_of(board, (static_cast<int>(stm) << 3) | ROOK);
+      uint64_t stmQueens = bb_of(board, (static_cast<int>(stm) << 3) | QUEEN);
+      uint64_t stmKingBB = bb_of(board, (static_cast<int>(stm) << 3) | KING);
       while (cand)
       {
         uint64_t lsb = cand & -cand;
         int to = __builtin_ctzll(lsb);
         cand ^= lsb;
+        uint64_t occ_to = (board.bb_occ & ~(1ULL << ksq)) | (1ULL << to);
         bool unsafe = false;
-        if ((stmAttacks >> to) & 1ULL)
-        {
+        if ((stmPawnAttacks >> to) & 1ULL)
           unsafe = true;
-        }
+        if (!unsafe && (knightAttacks[to] & stmKnights))
+          unsafe = true;
+        if (!unsafe && stmKingBB && (kingAttacks[to] & stmKingBB))
+          unsafe = true;
+        if (!unsafe && (rookAttacks(to, occ_to) & (stmRooks | stmQueens)))
+          unsafe = true;
+        if (!unsafe && (bishopAttacks(to, occ_to) & (stmBishops | stmQueens)))
+          unsafe = true;
         if (!unsafe)
-        {
-          if ((rookAttacks(to, occ_after) & stmRookQueen) != 0ULL ||
-              (bishopAttacks(to, occ_after) & stmBishopQueen) != 0ULL)
-          {
-            unsafe = true;
-          }
-        }
-        if (!unsafe)
-        {
           legal |= lsb;
-        }
       }
-      uint64_t stmKingBB = bb_of(board, (static_cast<int>(stm) << 3) | KING);
       if (stmKingBB)
       {
         int stmKsq = __builtin_ctzll(stmKingBB);
@@ -912,6 +927,8 @@ int basicEvaluate(const Board &board)
     }
   }
   int mkBonus = std::max(0, (8 - mk) * 12);
+  if (oppInCheck)
+    mkBonus /= 2;
   if (mkBonus > 120)
     mkBonus = 120;
   scoreWhite += (stm == WHITE ? mkBonus : -mkBonus);
