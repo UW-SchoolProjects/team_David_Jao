@@ -329,6 +329,8 @@ static const int EG_PST[7][64] = {
 // Central closeness in 0..3 (3 = most central on d/e files and 4/5 ranks).
 static inline int center_closeness(int sq64)
 {
+  if (sq64 < 0 || sq64 >= 64)
+    return 0;
   int f = sq64 & 7;
   int r = sq64 >> 3;
   int df = std::min(std::abs(f - 3), std::abs(f - 4));
@@ -352,15 +354,17 @@ static inline uint64_t pawn_attacks_from(int sq64, Side side)
   constexpr uint64_t FILE_H = 0x8080808080808080ULL;
   if (side == WHITE)
   {
-    uint64_t east = (bb << 9) & ~FILE_A;
-    uint64_t west = (bb << 7) & ~FILE_H;
-    return east | west;
+    // White moves up the board: northeast is <<9 (mask file H), northwest is <<7 (mask file A)
+    uint64_t ne = (bb << 9) & ~FILE_H;
+    uint64_t nw = (bb << 7) & ~FILE_A;
+    return ne | nw;
   }
   else
   {
-    uint64_t east = (bb >> 7) & ~FILE_A;
-    uint64_t west = (bb >> 9) & ~FILE_H;
-    return east | west;
+    // Black moves down the board: southeast is >>7 (mask file H), southwest is >>9 (mask file A)
+    uint64_t se = (bb >> 7) & ~FILE_H;
+    uint64_t sw = (bb >> 9) & ~FILE_A;
+    return se | sw;
   }
 }
 
@@ -407,13 +411,21 @@ struct CaptureCandidate
   int to;
   PieceType mover;
   PieceType victim;
+  bool isEnPassant;
 };
 
 // Gather pseudo-legal captures for a side (ignores pins/checks).
 static void gather_capture_candidates(const Board &board, Side side, std::vector<CaptureCandidate> &out)
 {
   uint64_t occ = board.bb_occ;
-  uint64_t oppOcc = occ_side(board, side == WHITE ? BLACK : WHITE);
+  Side oppSide = (side == WHITE ? BLACK : WHITE);
+  uint64_t oppOcc = occ_side(board, oppSide);
+  int epSq64 = (board.ep_square != NO_SQUARE) ? BB_INDEX_FROM_0x88(board.ep_square) : -1;
+  uint64_t oppAttacks = attack_map(board, oppSide);
+
+  auto push_capture = [&](int fromSq, int toSq, PieceType moverType, PieceType victimType, bool isEnPassant) {
+    out.push_back({fromSq, toSq, moverType, victimType, isEnPassant});
+  };
 
   auto add_capture = [&](int fromSq, uint64_t targets, PieceType moverType) {
     while (targets)
@@ -425,7 +437,7 @@ static void gather_capture_candidates(const Board &board, Side side, std::vector
       int victimPiece = board.squares[to88];
       if (victimPiece == EMPTY)
         continue;
-      out.push_back({fromSq, toSq, moverType, static_cast<PieceType>(type_of(victimPiece))});
+      push_capture(fromSq, toSq, moverType, static_cast<PieceType>(type_of(victimPiece)), false);
     }
   };
 
@@ -435,8 +447,16 @@ static void gather_capture_candidates(const Board &board, Side side, std::vector
     uint64_t lsb = pawns & -pawns;
     int fromSq = __builtin_ctzll(lsb);
     pawns ^= lsb;
-    uint64_t targets = pawn_attacks_from(fromSq, side) & oppOcc;
-    add_capture(fromSq, targets, PAWN);
+    uint64_t captures = pawn_attacks_from(fromSq, side) & oppOcc;
+    add_capture(fromSq, captures, PAWN);
+    if (epSq64 != -1)
+    {
+      uint64_t epBB = 1ULL << epSq64;
+      if (pawn_attacks_from(fromSq, side) & epBB)
+      {
+        push_capture(fromSq, epSq64, PAWN, PAWN, true);
+      }
+    }
   }
 
   uint64_t knights = bb_of(board, (static_cast<int>(side) << 3) | KNIGHT);
@@ -485,8 +505,8 @@ static void gather_capture_candidates(const Board &board, Side side, std::vector
     uint64_t lsb = kings & -kings;
     int fromSq = __builtin_ctzll(lsb);
     kings ^= lsb;
-    uint64_t targets = kingAttacks[fromSq] & oppOcc;
-    add_capture(fromSq, targets, KING);
+    uint64_t safeTargets = kingAttacks[fromSq] & oppOcc & ~oppAttacks;
+    add_capture(fromSq, safeTargets, KING);
   }
 }
 
@@ -500,7 +520,27 @@ static int static_exchange_eval_side(const Board &board, const CaptureCandidate 
   const int capSq88 = SQ64_to_0x88(toSq64);
 
   const int movingPieceFull = (static_cast<int>(mover) << 3) | static_cast<int>(c.mover);
-  const int victimPieceFull = board.squares[capSq88];
+  int victimPieceFull;
+  int victimSq64 = toSq64;
+  int victimSq88 = capSq88;
+  bool isEnPassant = c.isEnPassant;
+
+  if (isEnPassant)
+  {
+    int capturedSq88 = capSq88 + (mover == WHITE ? -16 : 16);
+    if (!IS_ONBOARD(capturedSq88))
+      return 0;
+    victimPieceFull = board.squares[capturedSq88];
+    if (victimPieceFull == EMPTY || type_of(victimPieceFull) != PAWN)
+      return 0;
+    victimSq88 = capturedSq88;
+    victimSq64 = BB_INDEX_FROM_0x88(capturedSq88);
+  }
+  else
+  {
+    victimPieceFull = board.squares[capSq88];
+    victimSq64 = toSq64;
+  }
 
   if (victimPieceFull == EMPTY)
     return 0;
@@ -517,11 +557,11 @@ static int static_exchange_eval_side(const Board &board, const CaptureCandidate 
   clear_bit(bb[movingPieceFull], fromSq64);
   occ &= ~(1ULL << fromSq64);
 
-  // Remove captured victim on target square
-  clear_bit(bb[victimPieceFull], toSq64);
-  occ &= ~(1ULL << toSq64);
+  // Remove captured victim (may differ from target square in en passant)
+  clear_bit(bb[victimPieceFull], victimSq64);
+  occ &= ~(1ULL << victimSq64);
 
-  // Place moving piece on target
+  // Place moving piece on target square
   set_bit(bb[movingPieceFull], toSq64);
   occ |= (1ULL << toSq64);
 
@@ -538,15 +578,15 @@ static int static_exchange_eval_side(const Board &board, const CaptureCandidate 
     constexpr uint64_t FILE_H = 0x8080808080808080ULL;
     if (s == WHITE)
     {
-      uint64_t west = (bbSq >> 9) & ~FILE_H;
-      uint64_t east = (bbSq >> 7) & ~FILE_A;
-      return west | east;
+      uint64_t fromEast = (bbSq >> 7) & ~FILE_A; // came from file-1 (east capture)
+      uint64_t fromWest = (bbSq >> 9) & ~FILE_H; // came from file+1 (west capture)
+      return fromEast | fromWest;
     }
     else
     {
-      uint64_t west = (bbSq << 7) & ~FILE_A;
-      uint64_t east = (bbSq << 9) & ~FILE_H;
-      return west | east;
+      uint64_t fromWest = (bbSq << 7) & ~FILE_H; // came from file+1
+      uint64_t fromEast = (bbSq << 9) & ~FILE_A; // came from file-1
+      return fromWest | fromEast;
     }
   };
 
@@ -591,7 +631,7 @@ static int static_exchange_eval_side(const Board &board, const CaptureCandidate 
       int fromSq = __builtin_ctzll(lsb);
       tmp ^= lsb;
 
-      uint64_t occTest = occBB & ~(1ULL << fromSq); // remove attacker; target stays occupied
+      uint64_t occTest = (occBB & ~(1ULL << fromSq)) | bbTarget; // simulate capture (move attacker onto target)
       bool kingDiag = (bishopAttacks(kingSq, occTest) & oppBish) != 0ULL;
       bool kingOrth = (rookAttacks(kingSq, occTest) & oppRook) != 0ULL;
       if (!(kingDiag || kingOrth))
@@ -820,6 +860,13 @@ int basicEvaluate(const Board &board)
       uint64_t legal = kingAttacks[ksq];
       legal &= ~occ_side(board, opp);
       legal &= ~stmAttacks;
+      uint64_t stmKingBB = bb_of(board, (static_cast<int>(stm) << 3) | KING);
+      if (stmKingBB)
+      {
+        int stmKsq = __builtin_ctzll(stmKingBB);
+        legal &= ~kingAttacks[stmKsq];
+      }
+      legal &= ~(1ULL << ksq);
       mk = popcount(legal);
     }
   }
@@ -828,12 +875,7 @@ int basicEvaluate(const Board &board)
     mkBonus = 120;
   scoreWhite += (stm == WHITE ? mkBonus : -mkBonus);
 
-  if (mk == 0 && oppInCheck)
-  {
-    constexpr int CHECKMATE_BONUS = 100000;
-    scoreWhite += (stm == WHITE ? CHECKMATE_BONUS : -CHECKMATE_BONUS);
-  }
-  else if (!oppInCheck && mk <= 1)
+  if (!oppInCheck && mk <= 1)
   {
     constexpr int CONSTRAINT_BONUS = 300;
     scoreWhite += (stm == WHITE ? CONSTRAINT_BONUS : -CONSTRAINT_BONUS);
