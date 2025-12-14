@@ -576,23 +576,59 @@ int search(Board &board,
   const bool pruneDisabledEndgame =
       is_clear_endgame_for_null(board) || totalNonKing <= 6;
 
+  const bool extensionEligible =
+      (captureChainLen >= CAPTURE_CHAIN_EXTENSION_TRIGGER &&
+       extensionsUsed < CAPTURE_CHAIN_EXTENSION_MAX);
+
   int ttScore = 0;
   Move ttMove;
-  if (TT.probe(key, depth, alpha, beta, ply, ttScore, ttMove))
+  bool ttProbedBase = false;
+  if (!extensionEligible)
   {
-    // Maintain PV on TT hit
-    pvLength[ply] = 0;
-    if (!ttMove.isNull())
+    ttProbedBase = true;
+    if (TT.probe(key, depth, alpha, beta, ply, ttScore, ttMove))
     {
-      pvTable[ply][0] = ttMove;
-      pvLength[ply] = 1;
+      // Maintain PV on TT hit
+      pvLength[ply] = 0;
+      if (!ttMove.isNull())
+      {
+        pvTable[ply][0] = ttMove;
+        pvLength[ply] = 1;
+      }
+      return ttScore;
     }
-    return ttScore;
   }
 
-  // Generate moves after TT miss so hits avoid move gen cost.
+  // Generate moves (needed to know if captures are still forced for extension).
   MoveList moves;
   get_variant_moves(board, sideToMove, moves);
+
+  // Capture-chain extension: once per path, trigger after consecutive captures
+  // when the position still forces captures (variant move list is capture-only).
+  const bool forcedCaptures = (moves.count > 0) && moves.moves[0].isCapture();
+  int effectiveDepth = depth;
+  int usedExtensions = extensionsUsed;
+  if (extensionEligible && forcedCaptures)
+  {
+    effectiveDepth += 1;
+    usedExtensions += 1;
+  }
+
+  // Probe TT at the effective depth (handles extended nodes correctly).
+  if (!ttProbedBase || effectiveDepth != depth)
+  {
+    if (TT.probe(key, effectiveDepth, alpha, beta, ply, ttScore, ttMove))
+    {
+      // Maintain PV on TT hit
+      pvLength[ply] = 0;
+      if (!ttMove.isNull())
+      {
+        pvTable[ply][0] = ttMove;
+        pvLength[ply] = 1;
+      }
+      return ttScore;
+    }
+  }
 
   // Precompute provoke penalties for quiet moves at the root (cheap heuristic).
   std::unordered_map<uint32_t, int> quietPenalties;
@@ -641,32 +677,6 @@ int search(Board &board,
     auto it = quietPenalties.find(m.raw());
     return (it == quietPenalties.end() ? 0 : it->second);
   };
-
-  // Capture-chain extension: once per path, trigger after consecutive captures
-  // when the position still forces captures (variant move list is capture-only).
-  const bool forcedCaptures = (moves.count > 0) && moves.moves[0].isCapture();
-  int effectiveDepth = depth;
-  int usedExtensions = extensionsUsed;
-  if (captureChainLen >= CAPTURE_CHAIN_EXTENSION_TRIGGER &&
-      forcedCaptures &&
-      usedExtensions < CAPTURE_CHAIN_EXTENSION_MAX)
-  {
-    effectiveDepth += 1;
-    usedExtensions += 1;
-  }
-
-  // Optional probe at the extended depth to reuse deeper TT entries
-  if (effectiveDepth != depth &&
-      TT.probe(key, effectiveDepth, alpha, beta, ply, ttScore, ttMove))
-  {
-    pvLength[ply] = 0;
-    if (!ttMove.isNull())
-    {
-      pvTable[ply][0] = ttMove;
-      pvLength[ply] = 1;
-    }
-    return ttScore;
-  }
 
   // Initialize PV length for this ply (no moves yet)
   pvLength[ply] = 0;
