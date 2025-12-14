@@ -352,10 +352,17 @@ static const int DEFAULT_EG_PST[7][64] = {
         -1, 0, 0, 1, 1, 0, 0, -1}};
 
 #if HAVE_TUNED_WEIGHTS
-static_assert(sizeof(TUNED_PST_MG) == sizeof(int) * 7 * 64, "TUNED_PST_MG must be 7x64");
-static_assert(sizeof(TUNED_PST_EG) == sizeof(int) * 7 * 64, "TUNED_PST_EG must be 7x64");
+#include <type_traits>
+static_assert(std::extent<decltype(TUNED_PST_MG), 0>::value == 7, "TUNED_PST_MG must have 7 rows");
+static_assert(std::extent<decltype(TUNED_PST_MG), 1>::value == 64, "TUNED_PST_MG must have 64 cols");
+static_assert(std::extent<decltype(TUNED_PST_EG), 0>::value == 7, "TUNED_PST_EG must have 7 rows");
+static_assert(std::extent<decltype(TUNED_PST_EG), 1>::value == 64, "TUNED_PST_EG must have 64 cols");
 static const int (&MG_PST)[7][64] = TUNED_PST_MG;
 static const int (&EG_PST)[7][64] = TUNED_PST_EG;
+static_assert(TUNED_BISHOP_PAIR >= -50 && TUNED_BISHOP_PAIR <= 50, "TUNED_BISHOP_PAIR out of clamp");
+static_assert(TUNED_TEMPO >= -50 && TUNED_TEMPO <= 50, "TUNED_TEMPO out of clamp");
+static_assert(TUNED_KING_PROX >= -50 && TUNED_KING_PROX <= 50, "TUNED_KING_PROX out of clamp");
+static_assert(TUNED_EVAL_BIAS >= -50 && TUNED_EVAL_BIAS <= 50, "TUNED_EVAL_BIAS out of clamp");
 #else
 static const int (&MG_PST)[7][64] = DEFAULT_MG_PST;
 static const int (&EG_PST)[7][64] = DEFAULT_EG_PST;
@@ -926,12 +933,13 @@ int basicEvaluate(const Board &board)
 
   if (KING_PROX_BONUS != 0 && kingSq[WHITE] != -1 && kingSq[BLACK] != -1)
   {
-    int dist = manhattan(kingSq[WHITE], kingSq[BLACK]);
-    int prox = std::max(0, 10 - dist);
+    const int dist = manhattan(kingSq[WHITE], kingSq[BLACK]);
+    const int prox = std::max(0, 10 - dist);
     if (prox > 0)
     {
-      int egWeight = PHASE_TOTAL - phase;
-      int proxTerm = (prox * egWeight * KING_PROX_BONUS) / std::max(1, PHASE_TOTAL);
+      const int egWeight = PHASE_TOTAL - phase;
+      const long long term = static_cast<long long>(prox) * egWeight * KING_PROX_BONUS;
+      const int proxTerm = static_cast<int>(std::max<long long>(std::min<long long>(term / std::max(1, PHASE_TOTAL), INT_MAX), INT_MIN));
       egScore += proxTerm;
     }
   }

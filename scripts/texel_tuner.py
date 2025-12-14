@@ -117,6 +117,7 @@ def parse_fen(fen: str):
     rank = 7
     file = 0
     ranks_seen = 0
+    legal_pieces = set("PNBRQKpnbrqk")
     for ch in placement:
         if ch == "/":
             if file != 8 or ranks_seen >= 7:
@@ -130,7 +131,7 @@ def parse_fen(fen: str):
             if file > 8:
                 return None, None
             continue
-        if file >= 8 or rank < 0:
+        if ch not in legal_pieces or file >= 8 or rank < 0:
             return None, None
         squares[rank * 8 + file] = ch
         file += 1
@@ -313,10 +314,16 @@ def accuracy(samples: List[Sample], w) -> float:
 # ---------------------------------------------------------------------------
 
 def clamp_and_round(value: float, clamp: float) -> int:
-    return int(round(max(-clamp, min(clamp, value))))
+    # Sanitize non-finite values to zero to avoid emitting invalid headers.
+    if not math.isfinite(value):
+        value = 0.0
+    value = max(-clamp, min(clamp, value))
+    return int(round(value))
 
 
 def emit_header(w, path: str, pst_clamp: float, small_clamp: float):
+    if len(w) < NUM_FEATURES:
+        raise ValueError(f"Weight vector too small: got {len(w)}, expected >= {NUM_FEATURES}")
     dirpath = os.path.dirname(os.path.abspath(path))
     if dirpath:
         os.makedirs(dirpath, exist_ok=True)
@@ -327,8 +334,19 @@ def emit_header(w, path: str, pst_clamp: float, small_clamp: float):
         for sq in range(64):
             mg_idx = IDX_MG_START + pt_idx * 64 + sq
             eg_idx = IDX_EG_START + pt_idx * 64 + sq
+            if mg_idx >= len(w) or eg_idx >= len(w):
+                raise IndexError(f"PST index out of range (mg:{mg_idx}, eg:{eg_idx}, len(w)={len(w)})")
             mg[pt_idx][sq] = clamp_and_round(w[mg_idx], pst_clamp)
             eg[pt_idx][sq] = clamp_and_round(w[eg_idx], pst_clamp)
+
+    for idx_name, idx in (
+        ("BISHOP_PAIR", IDX_BISHOP_PAIR),
+        ("TEMPO", IDX_TEMPO),
+        ("KING_PROX", IDX_KING_PROX),
+        ("BIAS", IDX_BIAS),
+    ):
+        if idx >= len(w):
+            raise IndexError(f"{idx_name} index {idx} out of range for len(w)={len(w)}")
 
     bp = clamp_and_round(w[IDX_BISHOP_PAIR], small_clamp)
     tempo = clamp_and_round(w[IDX_TEMPO], small_clamp)
@@ -397,15 +415,22 @@ def parse_args():
 
 def load_samples(path: str, max_samples: int) -> List[Sample]:
     samples: List[Sample] = []
+    bad_rows = 0
     with open_maybe_gzip(path, "rt") as fh:
         reader = csv.DictReader(fh)
         for row in reader:
             fen = (row.get("fen") or "").strip()
             if not fen:
+                bad_rows += 1
+                continue
+            score_str = row.get("eval_deep_cp") or row.get("eval_cp")
+            if score_str is None:
+                bad_rows += 1
                 continue
             try:
-                score = int(row.get("eval_deep_cp") or row.get("eval_cp") or 0)
-            except ValueError:
+                score = int(score_str)
+            except (TypeError, ValueError):
+                bad_rows += 1
                 continue
             s = build_sample(fen, score)
             if s is None:
@@ -413,6 +438,8 @@ def load_samples(path: str, max_samples: int) -> List[Sample]:
             samples.append(s)
             if max_samples and len(samples) >= max_samples:
                 break
+    if bad_rows:
+        print(f"Skipped {bad_rows} rows due to missing/invalid fen or score.")
     return samples
 
 

@@ -311,9 +311,9 @@ static Move search_best_move(EngineSession &sess) {
     bool capture_heavy = false;
     gather_root_context(sess.board, in_check, capture_heavy);
 
+    MoveList rootMoves;
     {
         Board bcopy = sess.board;
-        MoveList rootMoves;
         generate_variant_moves(bcopy, rootMoves);
         bool forcedCaptures = (rootMoves.count > 0) && rootMoves.moves[0].isCapture();
         diag_log("root_moves=" + std::to_string(rootMoves.count) +
@@ -324,6 +324,18 @@ static Move search_best_move(EngineSession &sess) {
                  " my_time_ms=" + std::to_string(sess.my_time_ms) +
                  " time_per_move_ms=" + std::to_string(sess.time_per_move_ms) +
                  " max_depth=" + std::to_string(sess.max_depth));
+    }
+
+    // Terminal node: no legal moves. Avoid calling search on an empty root set,
+    // and surface a deterministic score so protocol clients don't hang.
+    if (rootMoves.count == 0) {
+        bool stmInCheck = isInCheck(sess.board, static_cast<Side>(sess.board.side));
+        sess.last_root_score = stmInCheck ? -30000 : 0;
+        sess.has_root_score = true;
+        diag_log(std::string("no root moves; terminal position, in_check=") +
+                 (stmInCheck ? "1" : "0") +
+                 " score=" + std::to_string(sess.last_root_score));
+        return Move(); // null move signals terminal
     }
 
     int remaining = sess.my_time_ms > 0 ? sess.my_time_ms : 50;
