@@ -354,16 +354,14 @@ static inline uint64_t pawn_attacks_from(int sq64, Side side)
   constexpr uint64_t FILE_H = 0x8080808080808080ULL;
   if (side == WHITE)
   {
-    // White moves up the board: northeast is <<9 (mask file H), northwest is <<7 (mask file A)
-    uint64_t ne = (bb << 9) & ~FILE_H;
-    uint64_t nw = (bb << 7) & ~FILE_A;
+    uint64_t ne = (bb & ~FILE_H) << 9; // from not-H file to NE
+    uint64_t nw = (bb & ~FILE_A) << 7; // from not-A file to NW
     return ne | nw;
   }
   else
   {
-    // Black moves down the board: southeast is >>7 (mask file H), southwest is >>9 (mask file A)
-    uint64_t se = (bb >> 7) & ~FILE_H;
-    uint64_t sw = (bb >> 9) & ~FILE_A;
+    uint64_t se = (bb & ~FILE_A) >> 7; // from not-A file to SE
+    uint64_t sw = (bb & ~FILE_H) >> 9; // from not-H file to SW
     return se | sw;
   }
 }
@@ -421,7 +419,6 @@ static void gather_capture_candidates(const Board &board, Side side, std::vector
   Side oppSide = (side == WHITE ? BLACK : WHITE);
   uint64_t oppOcc = occ_side(board, oppSide);
   int epSq64 = (board.ep_square != NO_SQUARE) ? BB_INDEX_FROM_0x88(board.ep_square) : -1;
-  uint64_t oppAttacks = attack_map(board, oppSide);
 
   auto push_capture = [&](int fromSq, int toSq, PieceType moverType, PieceType victimType, bool isEnPassant) {
     out.push_back({fromSq, toSq, moverType, victimType, isEnPassant});
@@ -499,15 +496,6 @@ static void gather_capture_candidates(const Board &board, Side side, std::vector
     add_capture(fromSq, targets, QUEEN);
   }
 
-  uint64_t kings = bb_of(board, (static_cast<int>(side) << 3) | KING);
-  while (kings)
-  {
-    uint64_t lsb = kings & -kings;
-    int fromSq = __builtin_ctzll(lsb);
-    kings ^= lsb;
-    uint64_t safeTargets = kingAttacks[fromSq] & oppOcc & ~oppAttacks;
-    add_capture(fromSq, safeTargets, KING);
-  }
 }
 
 // Lightweight SEE variant that works on a static board and explicit mover side.
@@ -525,21 +513,47 @@ static int static_exchange_eval_side(const Board &board, const CaptureCandidate 
   int victimSq88 = capSq88;
   bool isEnPassant = c.isEnPassant;
 
+  auto piece_value = [&](int pt) {
+    if (pt < EMPTY || pt > KING)
+      return 0;
+    return MG_PIECE_VALUE[pt];
+  };
+
+  auto promotion_gain = [&](int toSqLocal, PieceType moverPt, Side s) -> int {
+    if (moverPt != PAWN)
+      return 0;
+    int rank = toSqLocal >> 3;
+    if ((s == WHITE && rank == 7) || (s == BLACK && rank == 0))
+    {
+      return MG_PIECE_VALUE[QUEEN] - MG_PIECE_VALUE[PAWN];
+    }
+    return 0;
+  };
+
+  if (!IS_ONBOARD(capSq88))
+    return 0;
+
   if (isEnPassant)
   {
     int capturedSq88 = capSq88 + (mover == WHITE ? -16 : 16);
     if (!IS_ONBOARD(capturedSq88))
+      return 0;
+    if (capturedSq88 < 0 || capturedSq88 >= BOARD_SIZE)
       return 0;
     victimPieceFull = board.squares[capturedSq88];
     if (victimPieceFull == EMPTY || type_of(victimPieceFull) != PAWN)
       return 0;
     victimSq88 = capturedSq88;
     victimSq64 = BB_INDEX_FROM_0x88(capturedSq88);
+    if (victimSq64 < 0 || victimSq64 >= 64)
+      return 0;
   }
   else
   {
     victimPieceFull = board.squares[capSq88];
     victimSq64 = toSq64;
+    if (victimSq64 < 0 || victimSq64 >= 64)
+      return 0;
   }
 
   if (victimPieceFull == EMPTY)
@@ -566,7 +580,9 @@ static int static_exchange_eval_side(const Board &board, const CaptureCandidate 
   occ |= (1ULL << toSq64);
 
   int gains[32];
-  gains[0] = MG_PIECE_VALUE[type_of(victimPieceFull)];
+  int captureValue = piece_value(type_of(victimPieceFull));
+  int initialPromo = promotion_gain(toSq64, c.mover, mover);
+  gains[0] = captureValue + initialPromo;
   int depth = 0;
 
   Side side = them; // opponent to recapture
@@ -588,13 +604,6 @@ static int static_exchange_eval_side(const Board &board, const CaptureCandidate 
       uint64_t fromEast = (bbSq << 9) & ~FILE_A; // came from file-1
       return fromWest | fromEast;
     }
-  };
-
-  auto heuristic_piece_value = [](int pt) {
-    static const int vals[] = {0, 100, 330, 500, 550, 1500, 10000};
-    if (pt < 0 || pt >= static_cast<int>(sizeof(vals) / sizeof(vals[0])))
-      return 0;
-    return vals[pt];
   };
 
   auto attackers_of_side = [&](Side s, uint64_t occBB, uint64_t pieces[]) -> uint64_t {
@@ -687,7 +696,9 @@ static int static_exchange_eval_side(const Board &board, const CaptureCandidate 
     if (depth >= static_cast<int>(sizeof(gains) / sizeof(gains[0])))
       break; // safety guard
 
-    gains[depth] = heuristic_piece_value(type_of(targetPiece)) - gains[depth - 1];
+    int takeVal = piece_value(type_of(targetPiece));
+    int capPromo = promotion_gain(toSq64, static_cast<PieceType>(type_of(attackerPiece)), side);
+    gains[depth] = takeVal + capPromo - gains[depth - 1];
 
     // Capture: remove current target piece, move attacker onto target
     clear_bit(bb[targetPiece], toSq64);
@@ -857,9 +868,39 @@ int basicEvaluate(const Board &board)
     {
       int ksq = __builtin_ctzll(oppKingBB);
       oppInCheck = (stmAttacks & oppKingBB) != 0ULL;
-      uint64_t legal = kingAttacks[ksq];
-      legal &= ~occ_side(board, opp);
-      legal &= ~stmAttacks;
+      uint64_t raw = kingAttacks[ksq];
+      raw &= ~occ_side(board, opp);
+      raw &= ~stmAttacks;
+      uint64_t occ_after = board.bb_occ & ~(1ULL << ksq);
+      uint64_t legal = 0ULL;
+      uint64_t cand = raw;
+      uint64_t stmRookQueen = bb_of(board, (static_cast<int>(stm) << 3) | ROOK) |
+                             bb_of(board, (static_cast<int>(stm) << 3) | QUEEN);
+      uint64_t stmBishopQueen = bb_of(board, (static_cast<int>(stm) << 3) | BISHOP) |
+                                bb_of(board, (static_cast<int>(stm) << 3) | QUEEN);
+      while (cand)
+      {
+        uint64_t lsb = cand & -cand;
+        int to = __builtin_ctzll(lsb);
+        cand ^= lsb;
+        bool unsafe = false;
+        if ((stmAttacks >> to) & 1ULL)
+        {
+          unsafe = true;
+        }
+        if (!unsafe)
+        {
+          if ((rookAttacks(to, occ_after) & stmRookQueen) != 0ULL ||
+              (bishopAttacks(to, occ_after) & stmBishopQueen) != 0ULL)
+          {
+            unsafe = true;
+          }
+        }
+        if (!unsafe)
+        {
+          legal |= lsb;
+        }
+      }
       uint64_t stmKingBB = bb_of(board, (static_cast<int>(stm) << 3) | KING);
       if (stmKingBB)
       {
@@ -877,8 +918,10 @@ int basicEvaluate(const Board &board)
 
   if (!oppInCheck && mk <= 1)
   {
-    constexpr int CONSTRAINT_BONUS = 300;
-    scoreWhite += (stm == WHITE ? CONSTRAINT_BONUS : -CONSTRAINT_BONUS);
+    int constraint = (300 * mgPhaseScaled) / 100;
+    if (constraint > 120)
+      constraint = 120;
+    scoreWhite += (stm == WHITE ? constraint : -constraint);
   }
 
   // ---------------------------------------------------------------------------
