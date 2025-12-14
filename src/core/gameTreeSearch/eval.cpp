@@ -92,6 +92,13 @@ See LICENSE file for details.
 #include "../nextMoveGeneration/move.h"
 #include "../nextMoveGeneration/attacks.h"
 
+#if __has_include("weights_evaluated.h")
+#include "weights_evaluated.h"
+#define HAVE_TUNED_WEIGHTS 1
+#else
+#define HAVE_TUNED_WEIGHTS 0
+#endif
+
 // -----------------------------------------------------------------------------
 // Eval configuration / tuning knobs (easy to tweak later)
 // -----------------------------------------------------------------------------
@@ -126,10 +133,22 @@ static constexpr int EG_PIECE_VALUE[7] = {
 };
 
 // Bishop pair bonus (applied once per side)
-static constexpr int BISHOP_PAIR_BONUS = 30;
+static constexpr int DEFAULT_BISHOP_PAIR_BONUS = 30;
 
 // Tempo bonus (side to move)
-static constexpr int TEMPO_BONUS = 10;
+static constexpr int DEFAULT_TEMPO_BONUS = 10;
+
+#if HAVE_TUNED_WEIGHTS
+static constexpr int BISHOP_PAIR_BONUS = TUNED_BISHOP_PAIR;
+static constexpr int TEMPO_BONUS = TUNED_TEMPO;
+static constexpr int KING_PROX_BONUS = TUNED_KING_PROX;
+static constexpr int EVAL_BIAS = TUNED_EVAL_BIAS;
+#else
+static constexpr int BISHOP_PAIR_BONUS = DEFAULT_BISHOP_PAIR_BONUS;
+static constexpr int TEMPO_BONUS = DEFAULT_TEMPO_BONUS;
+static constexpr int KING_PROX_BONUS = 0;
+static constexpr int EVAL_BIAS = 0;
+#endif
 
 // Phase weights: how much each piece contributes to "middlegame-ness".
 // We exclude pawns and kings (standard approach).
@@ -179,7 +198,7 @@ static inline int mirrorSquare64(int sq64)
 
 // Middlegame PSTs (basic centralization patterns, very conservative to start).
 // You can replace these with better-tuned values later.
-static const int MG_PST[7][64] = {
+static const int DEFAULT_MG_PST[7][64] = {
     // [0] EMPTY - unused
     {0},
 
@@ -258,7 +277,7 @@ static const int MG_PST[7][64] = {
         2, 3, 1, 0, 0, 1, 3, 2}};
 
 // Endgame PSTs (king centralization, pawns advancing, etc. simplified).
-static const int EG_PST[7][64] = {
+static const int DEFAULT_EG_PST[7][64] = {
     // [0] EMPTY - unused
     {0},
 
@@ -327,6 +346,14 @@ static const int EG_PST[7][64] = {
         0, 1, 2, 3, 3, 2, 1, 0,
         0, 1, 1, 2, 2, 1, 1, 0,
         -1, 0, 0, 1, 1, 0, 0, -1}};
+
+#if HAVE_TUNED_WEIGHTS
+static const int (&MG_PST)[7][64] = TUNED_PST_MG;
+static const int (&EG_PST)[7][64] = TUNED_PST_EG;
+#else
+static const int (&MG_PST)[7][64] = DEFAULT_MG_PST;
+static const int (&EG_PST)[7][64] = DEFAULT_EG_PST;
+#endif
 
 // -----------------------------------------------------------------------------
 // Helper utilities for forced-capture-aware evaluation
@@ -1140,6 +1167,17 @@ int basicEvaluate(const Board &board)
   // Convert from White POV to side-to-move POV:
   // Positive = good for side to move.
   int stmScore = (board.side == WHITE) ? scoreWhite : -scoreWhite;
+
+  if (KING_PROX_BONUS != 0 && kingSq[WHITE] != -1 && kingSq[BLACK] != -1)
+  {
+    int dist = manhattan(kingSq[WHITE], kingSq[BLACK]);
+    int prox = std::max(0, 10 - dist);
+    int egWeightPct = ((PHASE_TOTAL - phase) * 100) / std::max(1, PHASE_TOTAL);
+    int proxTerm = (prox * egWeightPct * KING_PROX_BONUS) / 100;
+    stmScore += proxTerm;
+  }
+
+  stmScore += EVAL_BIAS;
 
   // Penalize side to move equally in either case
   stmScore -= sideToMovePenalty;
