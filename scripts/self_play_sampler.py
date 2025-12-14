@@ -263,6 +263,13 @@ def play_game(proc: subprocess.Popen, game_id: int, args, rng: random.Random, bu
             break
         move = parts[1]
         score = request_lastscore(proc)
+        # If engine reports no legal move (terminal), ensure we have a final score, record, then stop.
+        if move == "0000":
+            if score is None:
+                score = request_lastscore(proc)
+            if should_sample and score is not None:
+                rows.append([fen, score, phase, ply, side, game_id, move])
+            break
         if should_sample and score is not None:
             rows.append([fen, score, phase, ply, side, game_id, move])
         ply += 1
