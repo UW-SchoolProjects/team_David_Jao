@@ -526,7 +526,6 @@ static int static_exchange_eval_side(const Board &board, const CaptureCandidate 
   const int movingPieceFull = (static_cast<int>(mover) << 3) | static_cast<int>(c.mover);
   int victimPieceFull;
   int victimSq64 = toSq64;
-  int victimSq88 = capSq88;
   bool isEnPassant = c.isEnPassant;
   int targetPiece = movingPieceFull;
 
@@ -560,7 +559,6 @@ static int static_exchange_eval_side(const Board &board, const CaptureCandidate 
     victimPieceFull = board.squares[capturedSq88];
     if (victimPieceFull == EMPTY || type_of(victimPieceFull) != PAWN)
       return 0;
-    victimSq88 = capturedSq88;
     victimSq64 = BB_INDEX_FROM_0x88(capturedSq88);
     if (victimSq64 < 0 || victimSq64 >= 64)
       return 0;
@@ -949,19 +947,31 @@ int basicEvaluate(const Board &board)
       occ_to &= ~(1ULL << ksq);
       occ_to &= ~(1ULL << to); // remove captured occupant on target
       occ_to |= (1ULL << to);  // place king on target
-        bool unsafe = false;
+      bool unsafe = false;
       if (stmPawnAttacks & (1ULL << to))
+      {
         unsafe = true;
-        if (!unsafe && (knightAttacks[to] & stmKnights))
-          unsafe = true;
-        if (!unsafe && stmKingBB && (kingAttacks[to] & stmKingBB))
-          unsafe = true;
-        if (!unsafe && (rookAttacks(to, occ_to) & (stmRooks | stmQueens)))
-          unsafe = true;
-        if (!unsafe && (bishopAttacks(to, occ_to) & (stmBishops | stmQueens)))
-          unsafe = true;
-        if (!unsafe)
-          legal |= lsb;
+      }
+      if (!unsafe && (knightAttacks[to] & stmKnights))
+      {
+        unsafe = true;
+      }
+      if (!unsafe && stmKingBB && (kingAttacks[to] & stmKingBB))
+      {
+        unsafe = true;
+      }
+      if (!unsafe && (rookAttacks(to, occ_to) & (stmRooks | stmQueens)))
+      {
+        unsafe = true;
+      }
+      if (!unsafe && (bishopAttacks(to, occ_to) & (stmBishops | stmQueens)))
+      {
+        unsafe = true;
+      }
+      if (!unsafe)
+      {
+        legal |= lsb;
+      }
       }
       if (stmKingBB)
       {
