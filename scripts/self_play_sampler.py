@@ -262,10 +262,12 @@ def play_game(proc: subprocess.Popen, game_id: int, args, rng: random.Random, bu
         if len(parts) < 2 or not parts[1]:
             break
         move = parts[1]
-        # If engine reports no legal move (terminal), stop this game to avoid unlabeled rows.
-        if move == "0000":
-            break
         score = request_lastscore(proc)
+        # If engine reports no legal move (terminal), record the final row then stop.
+        if move == "0000":
+            if should_sample and score is not None:
+                rows.append([fen, score, phase, ply, side, game_id, move])
+            break
         if should_sample and score is not None:
             rows.append([fen, score, phase, ply, side, game_id, move])
         ply += 1

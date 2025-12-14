@@ -332,9 +332,11 @@ static Move search_best_move(EngineSession &sess) {
         bool stmInCheck = isInCheck(sess.board, static_cast<Side>(sess.board.side));
         sess.last_root_score = stmInCheck ? -30000 : 0;
         sess.has_root_score = true;
+        sess.last_move_uci = "0000";
         diag_log(std::string("no root moves; terminal position, in_check=") +
                  (stmInCheck ? "1" : "0") +
-                 " score=" + std::to_string(sess.last_root_score));
+                 " score=" + std::to_string(sess.last_root_score) +
+                 " move=0000");
         return Move(); // null move signals terminal
     }
 
