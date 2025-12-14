@@ -81,16 +81,6 @@ def start_engine(cmd: str, extra_env: Optional[dict] = None) -> subprocess.Popen
         bufsize=1,
         env=env,
     )
-    try:
-        import fcntl
-
-        out_flags = fcntl.fcntl(proc.stdout.fileno(), fcntl.F_GETFL)
-        fcntl.fcntl(proc.stdout.fileno(), fcntl.F_SETFL, out_flags | os.O_NONBLOCK)
-        if proc.stderr:
-            err_flags = fcntl.fcntl(proc.stderr.fileno(), fcntl.F_GETFL)
-            fcntl.fcntl(proc.stderr.fileno(), fcntl.F_SETFL, err_flags | os.O_NONBLOCK)
-    except Exception:
-        pass
     return proc
 
 
@@ -150,19 +140,22 @@ def request_lastscore(proc: subprocess.Popen) -> Optional[int]:
     parts = tl.split()
     if parts and parts[0] == "mate":
         try:
-            ply = int(parts[1])
+            dist = abs(int(parts[1]))
         except (IndexError, ValueError):
             return None
-        sign = -1 if ply < 0 else 1
-        dist = abs(ply)
-        val = max(1, 30000 - min(dist, 29999)) * sign
-    elif tl.startswith(("+m", "-m")) and len(tl) > 2:
-        sign = -1 if tl[0] == "-" else 1
+        val = max(1, 30000 - min(dist, 29999))
+    elif tl.startswith("+m") and len(tl) > 2:
         try:
             dist = int(tl[2:])
         except ValueError:
             return None
-        val = max(1, 30000 - min(dist, 29999)) * sign
+        val = max(1, 30000 - min(dist, 29999))
+    elif tl.startswith("-m") and len(tl) > 2:
+        try:
+            dist = int(tl[2:])
+        except ValueError:
+            return None
+        val = -max(1, 30000 - min(dist, 29999))
     else:
         try:
             val = int(token.lstrip("+"))
@@ -226,9 +219,13 @@ def evaluate_position(proc: subprocess.Popen, fen: str, side: str, args, move_ti
         return None
     move_line = read_until(proc, move_timeout, lambda l: l.startswith("move "))
     if move_line is None:
+        send(proc, "?")
         send(proc, "force")
+        drain_stdout(proc)
         return None
     score = request_lastscore(proc)
+    send(proc, "?")
+    drain_stdout(proc)
     send(proc, "force")
     return score
 
