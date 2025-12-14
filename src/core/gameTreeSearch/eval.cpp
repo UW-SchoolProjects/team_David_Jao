@@ -349,6 +349,8 @@ static inline int manhattan(int a, int b)
 // Pawn attacks from a square (0..63) for the given side.
 static inline uint64_t pawn_attacks_from(int sq64, Side side)
 {
+  if (sq64 < 0 || sq64 >= 64)
+    return 0ULL;
   uint64_t bb = 1ULL << sq64;
   constexpr uint64_t FILE_A = 0x0101010101010101ULL;
   constexpr uint64_t FILE_H = 0x8080808080808080ULL;
@@ -396,6 +398,9 @@ static uint64_t attack_map(const Board &board, Side side)
 
   uint64_t queens = bb_of(board, (static_cast<int>(side) << 3) | QUEEN);
   accumulate(queens, [&](int sq) { return bishopAttacks(sq, occ) | rookAttacks(sq, occ); });
+
+  uint64_t kings = bb_of(board, (static_cast<int>(side) << 3) | KING);
+  accumulate(kings, [&](int sq) { return kingAttacks[sq]; });
 
   return attacks;
 }
@@ -509,6 +514,7 @@ static int static_exchange_eval_side(const Board &board, const CaptureCandidate 
   int victimSq64 = toSq64;
   int victimSq88 = capSq88;
   bool isEnPassant = c.isEnPassant;
+  int targetPiece = movingPieceFull;
 
   auto piece_value = [&](int pt) {
     if (pt < EMPTY || pt > KING)
@@ -578,6 +584,20 @@ static int static_exchange_eval_side(const Board &board, const CaptureCandidate 
       occ |= (1ULL << sq64);
   };
 
+  auto promote_if_applicable = [&](int pieceIdx, int sq64, Side owner) -> int {
+    if (type_of(pieceIdx) != PAWN)
+      return pieceIdx;
+    int rank = sq64 >> 3;
+    if ((owner == WHITE && rank == 7) || (owner == BLACK && rank == 0))
+    {
+      clear_bit(bb[pieceIdx], sq64);
+      int queenIdx = (static_cast<int>(owner) << 3) | QUEEN;
+      set_bit(bb[queenIdx], sq64);
+      return queenIdx;
+    }
+    return pieceIdx;
+  };
+
   // Remove moving piece from origin
   clear_bit(bb[movingPieceFull], fromSq64);
   clear_occ(fromSq64);
@@ -589,6 +609,7 @@ static int static_exchange_eval_side(const Board &board, const CaptureCandidate 
   // Place moving piece on target square
   set_bit(bb[movingPieceFull], toSq64);
   set_occ(toSq64);
+  targetPiece = promote_if_applicable(targetPiece, toSq64, mover);
 
   int gains[32];
   int captureValue = piece_value(type_of(victimPieceFull));
@@ -597,7 +618,6 @@ static int static_exchange_eval_side(const Board &board, const CaptureCandidate 
   int depth = 0;
 
   Side side = them; // opponent to recapture
-  int targetPiece = movingPieceFull;
 
   auto pawn_attackers_to = [](int sq, Side s) {
     uint64_t bbSq = 1ULL << sq;
@@ -714,12 +734,13 @@ static int static_exchange_eval_side(const Board &board, const CaptureCandidate 
     // Capture: remove current target piece, move attacker onto target
     clear_bit(bb[targetPiece], toSq64);
     clear_bit(bb[attackerPiece], fromSq);
-    occ &= ~(1ULL << toSq64);
-    occ &= ~(1ULL << fromSq);
+    clear_occ(toSq64);
+    clear_occ(fromSq);
     targetPiece = attackerPiece;
     set_bit(bb[targetPiece], toSq64);
-    occ |= (1ULL << toSq64);
-
+    set_occ(toSq64);
+    Side capturingSide = side;
+    targetPiece = promote_if_applicable(targetPiece, toSq64, capturingSide);
     side = (side == WHITE ? BLACK : WHITE);
   }
 
@@ -935,9 +956,16 @@ int basicEvaluate(const Board &board)
 
   if (!oppInCheck && mk <= 1)
   {
-    int constraint = (300 * mgPhaseScaled) / 100;
-    if (constraint > 120)
-      constraint = 120;
+    int totalNonKing =
+        popcount(bb_of(board, WPAWN) | bb_of(board, WKNIGHT) | bb_of(board, WBISHOP) | bb_of(board, WROOK) |
+                 bb_of(board, WQUEEN)) +
+        popcount(bb_of(board, BPAWN) | bb_of(board, BKNIGHT) | bb_of(board, BBISHOP) | bb_of(board, BROOK) |
+                 bb_of(board, BQUEEN));
+    int richnessScale = std::max(20, 120 - std::min(30, totalNonKing) * 3);
+    int base = (300 * mgPhaseScaled) / 100;
+    int constraint = std::min(base, richnessScale);
+    if (constraint > 80)
+      constraint = 80;
     scoreWhite += (stm == WHITE ? constraint : -constraint);
   }
 
