@@ -86,29 +86,36 @@ See LICENSE file for details.
 
 #include "eval.h"
 #include <algorithm> // for std::min
+#include <cstdlib>   // for std::abs
+#include <vector>
+
+#include "../nextMoveGeneration/move.h"
+#include "../nextMoveGeneration/attacks.h"
 
 // -----------------------------------------------------------------------------
 // Eval configuration / tuning knobs (easy to tweak later)
 // -----------------------------------------------------------------------------
 
-// Piece values indexed by PieceType (0..6)
+// Piece values indexed by PieceType (0..6).
+// Middlegame inflated to discourage forced early trades; endgame tapers toward
+// more standard values once forced-exchange risk is lower.
 static constexpr int MG_PIECE_VALUE[7] = {
-    0,   // EMPTY
-    100, // PAWN
-    320, // KNIGHT
-    330, // BISHOP
-    500, // ROOK
-    900, // QUEEN
-    0    // KING (material value usually not used directly)
+    0,    // EMPTY
+    100,  // PAWN
+    330,  // KNIGHT
+    500,  // BISHOP
+    550,  // ROOK
+    1500, // QUEEN
+    0     // KING (material value usually not used directly)
 };
 
 static constexpr int EG_PIECE_VALUE[7] = {
     0,   // EMPTY
     100, // PAWN
-    320, // KNIGHT
+    300, // KNIGHT
     330, // BISHOP
     500, // ROOK
-    900, // QUEEN
+    950, // QUEEN
     0    // KING
 };
 
@@ -129,6 +136,7 @@ static constexpr int PHASE_QUEEN = 4;
 static constexpr int PHASE_KING = 0;
 
 static constexpr int PHASE_TOTAL = 24; // clamp target 0..24
+static constexpr int EG_PHASE_THRESHOLD = 8; // <= 8 => endgame conversion phase
 
 // Map PieceType -> phase weight
 static constexpr int PHASE_WEIGHT[7] = {
@@ -315,6 +323,354 @@ static const int EG_PST[7][64] = {
         -1, 0, 0, 1, 1, 0, 0, -1}};
 
 // -----------------------------------------------------------------------------
+// Helper utilities for forced-capture-aware evaluation
+// -----------------------------------------------------------------------------
+
+// Central closeness in 0..3 (3 = most central on d/e files and 4/5 ranks).
+static inline int center_closeness(int sq64)
+{
+  int f = sq64 & 7;
+  int r = sq64 >> 3;
+  int df = std::min(std::abs(f - 3), std::abs(f - 4));
+  int dr = std::min(std::abs(r - 3), std::abs(r - 4));
+  int cheb = std::max(df, dr);  // 0 in the very center, 3 on the rim
+  return std::max(0, 3 - cheb); // 3 (center) .. 0 (edge)
+}
+
+static inline int manhattan(int a, int b)
+{
+  int af = a & 7, ar = a >> 3;
+  int bf = b & 7, br = b >> 3;
+  return std::abs(af - bf) + std::abs(ar - br);
+}
+
+// Pawn attacks from a square (0..63) for the given side.
+static inline uint64_t pawn_attacks_from(int sq64, Side side)
+{
+  uint64_t bb = 1ULL << sq64;
+  constexpr uint64_t FILE_A = 0x0101010101010101ULL;
+  constexpr uint64_t FILE_H = 0x8080808080808080ULL;
+  if (side == WHITE)
+  {
+    uint64_t east = (bb << 9) & ~FILE_A;
+    uint64_t west = (bb << 7) & ~FILE_H;
+    return east | west;
+  }
+  else
+  {
+    uint64_t east = (bb >> 7) & ~FILE_A;
+    uint64_t west = (bb >> 9) & ~FILE_H;
+    return east | west;
+  }
+}
+
+// Bitboard of all squares attacked by the given side (pseudo-legal).
+static uint64_t attack_map(const Board &board, Side side)
+{
+  uint64_t occ = board.bb_occ;
+  uint64_t attacks = 0ULL;
+
+  auto accumulate = [&](uint64_t bb, auto attackFn) {
+    while (bb)
+    {
+      uint64_t lsb = bb & -bb;
+      int sq = __builtin_ctzll(lsb);
+      bb ^= lsb;
+      attacks |= attackFn(sq);
+    }
+  };
+
+  uint64_t pawns = bb_of(board, (static_cast<int>(side) << 3) | PAWN);
+  accumulate(pawns, [&](int sq) { return pawn_attacks_from(sq, side); });
+
+  uint64_t knights = bb_of(board, (static_cast<int>(side) << 3) | KNIGHT);
+  accumulate(knights, [&](int sq) { return knightAttacks[sq]; });
+
+  uint64_t bishops = bb_of(board, (static_cast<int>(side) << 3) | BISHOP);
+  accumulate(bishops, [&](int sq) { return bishopAttacks(sq, occ); });
+
+  uint64_t rooks = bb_of(board, (static_cast<int>(side) << 3) | ROOK);
+  accumulate(rooks, [&](int sq) { return rookAttacks(sq, occ); });
+
+  uint64_t queens = bb_of(board, (static_cast<int>(side) << 3) | QUEEN);
+  accumulate(queens, [&](int sq) { return bishopAttacks(sq, occ) | rookAttacks(sq, occ); });
+
+  uint64_t kings = bb_of(board, (static_cast<int>(side) << 3) | KING);
+  accumulate(kings, [&](int sq) { return kingAttacks[sq]; });
+
+  return attacks;
+}
+
+struct CaptureCandidate
+{
+  int from;
+  int to;
+  PieceType mover;
+  PieceType victim;
+};
+
+// Gather pseudo-legal captures for a side (ignores pins/checks).
+static void gather_capture_candidates(const Board &board, Side side, std::vector<CaptureCandidate> &out)
+{
+  uint64_t occ = board.bb_occ;
+  uint64_t oppOcc = occ_side(board, side == WHITE ? BLACK : WHITE);
+
+  auto add_capture = [&](int fromSq, uint64_t targets, PieceType moverType) {
+    while (targets)
+    {
+      uint64_t lsb = targets & -targets;
+      int toSq = __builtin_ctzll(lsb);
+      targets ^= lsb;
+      int to88 = SQ64_to_0x88(toSq);
+      int victimPiece = board.squares[to88];
+      if (victimPiece == EMPTY)
+        continue;
+      out.push_back({fromSq, toSq, moverType, static_cast<PieceType>(type_of(victimPiece))});
+    }
+  };
+
+  uint64_t pawns = bb_of(board, (static_cast<int>(side) << 3) | PAWN);
+  while (pawns)
+  {
+    uint64_t lsb = pawns & -pawns;
+    int fromSq = __builtin_ctzll(lsb);
+    pawns ^= lsb;
+    uint64_t targets = pawn_attacks_from(fromSq, side) & oppOcc;
+    add_capture(fromSq, targets, PAWN);
+  }
+
+  uint64_t knights = bb_of(board, (static_cast<int>(side) << 3) | KNIGHT);
+  while (knights)
+  {
+    uint64_t lsb = knights & -knights;
+    int fromSq = __builtin_ctzll(lsb);
+    knights ^= lsb;
+    uint64_t targets = knightAttacks[fromSq] & oppOcc;
+    add_capture(fromSq, targets, KNIGHT);
+  }
+
+  uint64_t bishops = bb_of(board, (static_cast<int>(side) << 3) | BISHOP);
+  while (bishops)
+  {
+    uint64_t lsb = bishops & -bishops;
+    int fromSq = __builtin_ctzll(lsb);
+    bishops ^= lsb;
+    uint64_t targets = bishopAttacks(fromSq, occ) & oppOcc;
+    add_capture(fromSq, targets, BISHOP);
+  }
+
+  uint64_t rooks = bb_of(board, (static_cast<int>(side) << 3) | ROOK);
+  while (rooks)
+  {
+    uint64_t lsb = rooks & -rooks;
+    int fromSq = __builtin_ctzll(lsb);
+    rooks ^= lsb;
+    uint64_t targets = rookAttacks(fromSq, occ) & oppOcc;
+    add_capture(fromSq, targets, ROOK);
+  }
+
+  uint64_t queens = bb_of(board, (static_cast<int>(side) << 3) | QUEEN);
+  while (queens)
+  {
+    uint64_t lsb = queens & -queens;
+    int fromSq = __builtin_ctzll(lsb);
+    queens ^= lsb;
+    uint64_t targets = (bishopAttacks(fromSq, occ) | rookAttacks(fromSq, occ)) & oppOcc;
+    add_capture(fromSq, targets, QUEEN);
+  }
+
+  uint64_t kings = bb_of(board, (static_cast<int>(side) << 3) | KING);
+  while (kings)
+  {
+    uint64_t lsb = kings & -kings;
+    int fromSq = __builtin_ctzll(lsb);
+    kings ^= lsb;
+    uint64_t targets = kingAttacks[fromSq] & oppOcc;
+    add_capture(fromSq, targets, KING);
+  }
+}
+
+// Lightweight SEE variant that works on a static board and explicit mover side.
+static int static_exchange_eval_side(const Board &board, const CaptureCandidate &c, Side mover)
+{
+  const Side them = (mover == WHITE ? BLACK : WHITE);
+  const int fromSq64 = c.from;
+  const int toSq64 = c.to;
+  const int fromSq88 = SQ64_to_0x88(fromSq64);
+  const int capSq88 = SQ64_to_0x88(toSq64);
+
+  const int movingPieceFull = (static_cast<int>(mover) << 3) | static_cast<int>(c.mover);
+  const int victimPieceFull = board.squares[capSq88];
+
+  if (victimPieceFull == EMPTY)
+    return 0;
+
+  uint64_t occ = board.bb_occ;
+  uint64_t bb[16];
+  for (int i = 0; i < 16; ++i)
+    bb[i] = board.bb_piece[i];
+
+  auto clear_bit = [](uint64_t &b, int sq64) { b &= ~(1ULL << sq64); };
+  auto set_bit = [](uint64_t &b, int sq64) { b |= (1ULL << sq64); };
+
+  // Remove moving piece from origin
+  clear_bit(bb[movingPieceFull], fromSq64);
+  occ &= ~(1ULL << fromSq64);
+
+  // Remove captured victim on target square
+  clear_bit(bb[victimPieceFull], toSq64);
+  occ &= ~(1ULL << toSq64);
+
+  // Place moving piece on target
+  set_bit(bb[movingPieceFull], toSq64);
+  occ |= (1ULL << toSq64);
+
+  int gains[32];
+  gains[0] = MG_PIECE_VALUE[type_of(victimPieceFull)];
+  int depth = 0;
+
+  Side side = them; // opponent to recapture
+  int targetPiece = movingPieceFull;
+
+  auto pawn_attackers_to = [](int sq, Side s) {
+    uint64_t bbSq = 1ULL << sq;
+    constexpr uint64_t FILE_A = 0x0101010101010101ULL;
+    constexpr uint64_t FILE_H = 0x8080808080808080ULL;
+    if (s == WHITE)
+    {
+      uint64_t west = (bbSq >> 9) & ~FILE_H;
+      uint64_t east = (bbSq >> 7) & ~FILE_A;
+      return west | east;
+    }
+    else
+    {
+      uint64_t west = (bbSq << 7) & ~FILE_A;
+      uint64_t east = (bbSq << 9) & ~FILE_H;
+      return west | east;
+    }
+  };
+
+  auto heuristic_piece_value = [](int pt) {
+    static const int vals[] = {0, 100, 330, 500, 550, 1500, 10000};
+    if (pt < 0 || pt >= static_cast<int>(sizeof(vals) / sizeof(vals[0])))
+      return 0;
+    return vals[pt];
+  };
+
+  auto attackers_of_side = [&](Side s, uint64_t occBB, uint64_t pieces[]) -> uint64_t {
+    uint64_t pawns = pieces[(static_cast<int>(s) << 3) | PAWN];
+    uint64_t knights = pieces[(static_cast<int>(s) << 3) | KNIGHT];
+    uint64_t bishops = pieces[(static_cast<int>(s) << 3) | BISHOP];
+    uint64_t rooks = pieces[(static_cast<int>(s) << 3) | ROOK];
+    uint64_t queens = pieces[(static_cast<int>(s) << 3) | QUEEN];
+    uint64_t kings = pieces[(static_cast<int>(s) << 3) | KING];
+
+    uint64_t bbTarget = 1ULL << toSq64;
+    uint64_t raw = 0ULL;
+    raw |= pawn_attackers_to(toSq64, s) & pawns;
+    raw |= knightAttacks[toSq64] & knights;
+    uint64_t bishopRay = bishopAttacks(toSq64, occBB);
+    raw |= bishopRay & (bishops | queens);
+    uint64_t rookRay = rookAttacks(toSq64, occBB);
+    raw |= rookRay & (rooks | queens);
+    raw |= kingAttacks[toSq64] & kings;
+    raw &= ~bbTarget; // exclude piece currently on target
+
+    // Filter out pinned attackers (removing fromSq while keeping target occupied must not expose own king).
+    if (kings == 0)
+      return raw; // no king info; skip filter
+    int kingSq = __builtin_ctzll(kings);
+    uint64_t oppBish = pieces[((static_cast<int>(s) ^ 1) << 3) | BISHOP] | pieces[((static_cast<int>(s) ^ 1) << 3) | QUEEN];
+    uint64_t oppRook = pieces[((static_cast<int>(s) ^ 1) << 3) | ROOK] | pieces[((static_cast<int>(s) ^ 1) << 3) | QUEEN];
+
+    uint64_t filtered = 0ULL;
+    uint64_t tmp = raw;
+    while (tmp)
+    {
+      uint64_t lsb = tmp & -tmp;
+      int fromSq = __builtin_ctzll(lsb);
+      tmp ^= lsb;
+
+      uint64_t occTest = occBB & ~(1ULL << fromSq); // remove attacker; target stays occupied
+      bool kingDiag = (bishopAttacks(kingSq, occTest) & oppBish) != 0ULL;
+      bool kingOrth = (rookAttacks(kingSq, occTest) & oppRook) != 0ULL;
+      if (!(kingDiag || kingOrth))
+      {
+        filtered |= lsb;
+      }
+    }
+    return filtered;
+  };
+
+  while (true)
+  {
+    uint64_t attackers = attackers_of_side(side, occ, bb);
+    if (!attackers)
+      break;
+
+    // Select least valuable attacker of this side
+    int fromSq = -1;
+    int attackerPiece = -1;
+    auto pick_attacker = [&](PieceType pt, uint64_t mask) -> bool {
+      if (mask == 0)
+        return false;
+      fromSq = __builtin_ctzll(mask);
+      attackerPiece = (static_cast<int>(side) << 3) | static_cast<int>(pt);
+      return true;
+    };
+
+    uint64_t mask;
+    mask = attackers & bb[(static_cast<int>(side) << 3) | PAWN];
+    if (pick_attacker(PAWN, mask))
+      goto found_attacker;
+    mask = attackers & bb[(static_cast<int>(side) << 3) | KNIGHT];
+    if (pick_attacker(KNIGHT, mask))
+      goto found_attacker;
+    mask = attackers & bb[(static_cast<int>(side) << 3) | BISHOP];
+    if (pick_attacker(BISHOP, mask))
+      goto found_attacker;
+    mask = attackers & bb[(static_cast<int>(side) << 3) | ROOK];
+    if (pick_attacker(ROOK, mask))
+      goto found_attacker;
+    mask = attackers & bb[(static_cast<int>(side) << 3) | QUEEN];
+    if (pick_attacker(QUEEN, mask))
+      goto found_attacker;
+    mask = attackers & bb[(static_cast<int>(side) << 3) | KING];
+    if (pick_attacker(KING, mask))
+      goto found_attacker;
+
+  found_attacker:
+    if (attackerPiece == -1)
+      break;
+
+    depth += 1;
+    if (depth >= static_cast<int>(sizeof(gains) / sizeof(gains[0])))
+      break; // safety guard
+
+    gains[depth] = heuristic_piece_value(type_of(targetPiece)) - gains[depth - 1];
+
+    // Capture: remove current target piece, move attacker onto target
+    clear_bit(bb[targetPiece], toSq64);
+    clear_bit(bb[attackerPiece], fromSq);
+    occ &= ~(1ULL << toSq64);
+    occ &= ~(1ULL << fromSq);
+    targetPiece = attackerPiece;
+    set_bit(bb[targetPiece], toSq64);
+    occ |= (1ULL << toSq64);
+
+    side = (side == WHITE ? BLACK : WHITE);
+  }
+
+  // Propagate best achievable scores backward
+  while (--depth >= 0)
+  {
+    gains[depth] = std::max(-gains[depth + 1], gains[depth]);
+  }
+
+  return gains[0];
+}
+
+// -----------------------------------------------------------------------------
 // Core evaluation
 // - Returns score from side-to-move perspective.
 // - Positive = good for side to move.
@@ -325,12 +681,10 @@ int basicEvaluate(const Board &board)
   int mgScore = 0; // Middlegame score (White POV)
   int egScore = 0; // Endgame score   (White POV)
 
+  int pieceCount[2][7] = {{0}};
   int whiteBishops = 0;
   int blackBishops = 0;
-  int whiteKingSq = -1;
-  int blackKingSq = -1;
-  int whiteQueenSq = -1;
-  int blackQueenSq = -1;
+  int kingSq[2] = {-1, -1};
 
   int phase = 0; // 0..PHASE_TOTAL
 
@@ -351,6 +705,8 @@ int basicEvaluate(const Board &board)
     if (pt < PAWN || pt > KING)
       continue;
 
+    pieceCount[side][pt]++;
+
     // Map 0x88 square to 0..63 index
     int sq64 = BB_INDEX_FROM_0x88(sq);
 
@@ -363,27 +719,55 @@ int basicEvaluate(const Board &board)
     // Phase contribution (based on piece type only)
     phase += PHASE_WEIGHT[pt];
 
+    int close = center_closeness(sq64);
+    int mgAdj = 0;
+    int egAdj = 0;
+    switch (pt)
+    {
+    case PAWN:
+      mgAdj += close * 6; // central pawns favored in MG
+      egAdj += close * 2;
+      break;
+    case KNIGHT:
+      mgAdj -= close * 2; // reduce risky early centralization
+      egAdj += close * 2;
+      break;
+    case BISHOP:
+      mgAdj -= close * 3;
+      egAdj += close * 3;
+      break;
+    case ROOK:
+      mgAdj -= close * 3;
+      egAdj += close * 3;
+      break;
+    case QUEEN:
+      mgAdj -= close * 5;
+      egAdj += close * 4;
+      break;
+    case KING:
+      egAdj += close * 6; // king activity in EG
+      break;
+    default:
+      break;
+    }
+
     if (side == WHITE)
     {
-      mgScore += mgVal;
-      egScore += egVal;
+      mgScore += mgVal + mgAdj;
+      egScore += egVal + egAdj;
       if (pt == BISHOP)
         ++whiteBishops;
       if (pt == KING)
-        whiteKingSq = sq64;
-      if (pt == QUEEN && whiteQueenSq == -1)
-        whiteQueenSq = sq64;
+        kingSq[WHITE] = sq64;
     }
     else
     {
-      mgScore -= mgVal;
-      egScore -= egVal;
+      mgScore -= mgVal + mgAdj;
+      egScore -= egVal + egAdj;
       if (pt == BISHOP)
         ++blackBishops;
       if (pt == KING)
-        blackKingSq = sq64;
-      if (pt == QUEEN && blackQueenSq == -1)
-        blackQueenSq = sq64;
+        kingSq[BLACK] = sq64;
     }
   }
 
@@ -405,142 +789,140 @@ int basicEvaluate(const Board &board)
   }
 
   // --- Phase tapered blend ---
-  //
-  // scoreWhite = (mgScore * phase + egScore * (PHASE_TOTAL - phase)) / PHASE_TOTAL
-  //
-  // When phase ≈ 24: mostly middlegame
-  // When phase ≈  0: mostly endgame
-
   int scoreWhite =
       (mgScore * phase + egScore * (PHASE_TOTAL - phase)) / std::max(1, PHASE_TOTAL);
 
   // --- Tempo bonus ---
-  // Add tempo from White POV
   if (board.side == WHITE)
     scoreWhite += TEMPO_BONUS;
   else
     scoreWhite -= TEMPO_BONUS;
 
-  // --- Endgame helpers for lone-king defense ---
-  // Prefer corners more strongly than generic edges for mate drives.
-  auto corner_preference_score = [](int sq64) {
-    int f = sq64 & 7;
-    int r = sq64 >> 3;
-    int df = std::min(f, 7 - f);
-    int dr = std::min(r, 7 - r);
-    int cheb_to_corner = std::max(df, dr); // 0 at corner, up to 7 at center
-    return 7 - std::min(cheb_to_corner, 7); // higher is closer to corner
-  };
-  auto king_manhattan = [](int a, int b) {
-    int af = a & 7, ar = a >> 3;
-    int bf = b & 7, br = b >> 3;
-    return std::abs(af - bf) + std::abs(ar - br);
-  };
+  // Phase weight for MG-only terms (fade after EG threshold)
+  int mgPhaseScaled = (phase >= EG_PHASE_THRESHOLD) ? 100 : (phase * 100) / std::max(1, EG_PHASE_THRESHOLD);
+  mgPhaseScaled = std::max(0, std::min(100, mgPhaseScaled));
 
-  auto no_side_pawns_pieces = [&](Side s) {
-    int idx = static_cast<int>(s) << 3;
-    return popcount(bb_of(board, idx | PAWN)) == 0 &&
-           popcount(bb_of(board, idx | KNIGHT)) == 0 &&
-           popcount(bb_of(board, idx | BISHOP)) == 0 &&
-           popcount(bb_of(board, idx | ROOK)) == 0 &&
-           popcount(bb_of(board, idx | QUEEN)) == 0;
-  };
+  Side stm = static_cast<Side>(board.side);
+  Side opp = (stm == WHITE ? BLACK : WHITE);
 
-  auto side_has_mating_material = [&](Side s) {
-    int idx = static_cast<int>(s) << 3;
-    int pawns   = popcount(bb_of(board, idx | PAWN));
-    int rooks   = popcount(bb_of(board, idx | ROOK));
-    int queens  = popcount(bb_of(board, idx | QUEEN));
-    int bishops = popcount(bb_of(board, idx | BISHOP));
-    int knights = popcount(bb_of(board, idx | KNIGHT));
-    if (queens > 0 || rooks > 0) return true;
-    if (pawns > 0) return true; // promotion potential, also resets 50-move counter
-    if (bishops >= 2) return true;
-    if (bishops == 1 && knights >= 1) return true; // B+N mate
-    return false; // lone minor(s) without pawns cannot force mate
-  };
-
-  auto count_nonking_material = [&](Side s) {
-    int idx = static_cast<int>(s) << 3;
-    return popcount(bb_of(board, idx | PAWN)) +
-           popcount(bb_of(board, idx | KNIGHT)) +
-           popcount(bb_of(board, idx | BISHOP)) +
-           popcount(bb_of(board, idx | ROOK)) +
-           popcount(bb_of(board, idx | QUEEN));
-  };
-
-  // If defending side is bare king and the attacker has mating material, encourage cornering and king proximity.
-  if (whiteKingSq != -1 && blackKingSq != -1) {
-    bool blackBare = no_side_pawns_pieces(BLACK);
-    bool whiteBare = no_side_pawns_pieces(WHITE);
-    int blackNonKing = count_nonking_material(BLACK);
-    int whiteNonKing = count_nonking_material(WHITE);
-
-    if (blackBare && !whiteBare && side_has_mating_material(WHITE)) {
-      int edge = corner_preference_score(blackKingSq);
-      int kingDist = king_manhattan(whiteKingSq, blackKingSq);
-      scoreWhite += edge * 12;
-      scoreWhite += (14 - kingDist) * 4;
-      if (whiteQueenSq != -1) {
-        int qDist = king_manhattan(whiteQueenSq, blackKingSq);
-        scoreWhite += (14 - qDist) * 3;
-      }
+  // ---------------------------------------------------------------------------
+  // Opponent king mobility (Mk) and tactical bonuses
+  // ---------------------------------------------------------------------------
+  uint64_t stmAttacks = attack_map(board, stm);
+  int mk = 0;
+  bool oppInCheck = false;
+  {
+    uint64_t oppKingBB = bb_of(board, (static_cast<int>(opp) << 3) | KING);
+    if (oppKingBB)
+    {
+      int ksq = __builtin_ctzll(oppKingBB);
+      oppInCheck = (stmAttacks & oppKingBB) != 0ULL;
+      uint64_t legal = kingAttacks[ksq];
+      legal &= ~occ_side(board, opp);
+      legal &= ~stmAttacks;
+      mk = popcount(legal);
     }
-    if (whiteBare && !blackBare && side_has_mating_material(BLACK)) {
-      int edge = corner_preference_score(whiteKingSq);
-      int kingDist = king_manhattan(whiteKingSq, blackKingSq);
-      scoreWhite -= edge * 12;
-      scoreWhite -= (14 - kingDist) * 4;
-      if (blackQueenSq != -1) {
-        int qDist = king_manhattan(blackQueenSq, whiteKingSq);
-        scoreWhite -= (14 - qDist) * 3;
-      }
-    }
+  }
+  int mkBonus = std::max(0, (8 - mk) * 12);
+  if (mkBonus > 120)
+    mkBonus = 120;
+  scoreWhite += (stm == WHITE ? mkBonus : -mkBonus);
 
-    // Broader mate drive: if defender has at most one non-king piece and no pawns, still drive king + heavy/minor pieces closer.
-    if (side_has_mating_material(WHITE) && popcount(bb_of(board, BPAWN)) == 0 && blackNonKing <= 1) {
-      int edge = corner_preference_score(blackKingSq);
-      int kingDist = king_manhattan(whiteKingSq, blackKingSq);
-      scoreWhite += edge * 10;
-      scoreWhite += (14 - kingDist) * 3;
-      // Encourage nearest attacking piece to approach
-      int bestAttackerDist = 99;
-      uint64_t attackers = bb_of(board, WQUEEN) | bb_of(board, WROOK) | bb_of(board, WBISHOP) | bb_of(board, WKNIGHT);
-      while (attackers) {
-        uint64_t lsb = attackers & -attackers;
-        int sq = __builtin_ctzll(lsb);
-        attackers ^= lsb;
-        int d = king_manhattan(sq, blackKingSq);
-        if (d < bestAttackerDist) bestAttackerDist = d;
-      }
-      if (bestAttackerDist != 99) {
-        scoreWhite += (14 - bestAttackerDist) * 2;
-      }
+  if (mk == 0 && oppInCheck)
+  {
+    constexpr int CHECKMATE_BONUS = 100000;
+    scoreWhite += (stm == WHITE ? CHECKMATE_BONUS : -CHECKMATE_BONUS);
+  }
+  else if (!oppInCheck && mk <= 1)
+  {
+    constexpr int CONSTRAINT_BONUS = 300;
+    scoreWhite += (stm == WHITE ? CONSTRAINT_BONUS : -CONSTRAINT_BONUS);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Trade risk: penalize forced bad captures with high-value pieces (MG heavy)
+  // ---------------------------------------------------------------------------
+  std::vector<CaptureCandidate> stmCaps;
+  gather_capture_candidates(board, stm, stmCaps);
+  int tradePenalty = 0;
+  for (const auto &c : stmCaps)
+  {
+    if (c.mover == KING)
+      continue;
+    int see = static_exchange_eval_side(board, c, stm);
+    int attackerVal = MG_PIECE_VALUE[c.mover];
+    if (see < 0 && attackerVal >= MG_PIECE_VALUE[KNIGHT])
+      tradePenalty += (-see) + attackerVal / 5;
+    if (c.mover == QUEEN && c.victim == PAWN)
+      tradePenalty += 20; // discourage queen pawn grabs under compulsion
+    if (MG_PIECE_VALUE[c.victim] < attackerVal / 2 && see <= 0)
+      tradePenalty += attackerVal / 6;
+  }
+  tradePenalty = (tradePenalty * mgPhaseScaled) / 100;
+  if (tradePenalty)
+    scoreWhite += (stm == WHITE ? -tradePenalty : tradePenalty);
+
+  // ---------------------------------------------------------------------------
+  // Mobility: opponent safe captures are bad, self-exposing captures are good.
+  // ---------------------------------------------------------------------------
+  std::vector<CaptureCandidate> oppCaps;
+  gather_capture_candidates(board, opp, oppCaps);
+  int safeCaps = 0;
+  int riskyCaps = 0;
+  for (const auto &c : oppCaps)
+  {
+    int see = static_exchange_eval_side(board, c, opp);
+    if (see >= 0)
+      ++safeCaps;
+    else
+      ++riskyCaps;
+  }
+  int mobilityBase = riskyCaps * 3 - safeCaps * 8;
+  mobilityBase = (mobilityBase * mgPhaseScaled) / 100;
+  if (mobilityBase)
+    scoreWhite += (opp == WHITE ? mobilityBase : -mobilityBase);
+
+  // ---------------------------------------------------------------------------
+  // Endgame KingAttackPhase: king activity + boosted Mk when mate is realistic
+  // ---------------------------------------------------------------------------
+  int oppNonKing = pieceCount[opp][PAWN] + pieceCount[opp][KNIGHT] + pieceCount[opp][BISHOP] +
+                   pieceCount[opp][ROOK] + pieceCount[opp][QUEEN];
+  bool oppMinimal = pieceCount[opp][PAWN] == 0 && oppNonKing <= 1;
+  bool stmHasMatingMaterial =
+      pieceCount[stm][QUEEN] > 0 || pieceCount[stm][ROOK] > 0 || pieceCount[stm][PAWN] > 0 ||
+      pieceCount[stm][BISHOP] >= 2 || (pieceCount[stm][BISHOP] == 1 && pieceCount[stm][KNIGHT] >= 1);
+  bool kingAttackPhase = (phase <= EG_PHASE_THRESHOLD) && stmHasMatingMaterial && oppMinimal &&
+                         kingSq[stm] != -1 && kingSq[opp] != -1;
+  if (kingAttackPhase)
+  {
+    int kingDist = manhattan(kingSq[stm], kingSq[opp]);
+    int kingActivity = std::max(0, 10 - kingDist) * 8;
+    int nearestAttacker = 99;
+    uint64_t attackers = bb_of(board, (static_cast<int>(stm) << 3) | QUEEN) |
+                         bb_of(board, (static_cast<int>(stm) << 3) | ROOK) |
+                         bb_of(board, (static_cast<int>(stm) << 3) | BISHOP) |
+                         bb_of(board, (static_cast<int>(stm) << 3) | KNIGHT);
+    while (attackers)
+    {
+      uint64_t lsb = attackers & -attackers;
+      int sq = __builtin_ctzll(lsb);
+      attackers ^= lsb;
+      int d = manhattan(sq, kingSq[opp]);
+      if (d < nearestAttacker)
+        nearestAttacker = d;
     }
-    if (side_has_mating_material(BLACK) && popcount(bb_of(board, WPAWN)) == 0 && whiteNonKing <= 1) {
-      int edge = corner_preference_score(whiteKingSq);
-      int kingDist = king_manhattan(whiteKingSq, blackKingSq);
-      scoreWhite -= edge * 10;
-      scoreWhite -= (14 - kingDist) * 3;
-      int bestAttackerDist = 99;
-      uint64_t attackers = bb_of(board, BQUEEN) | bb_of(board, BROOK) | bb_of(board, BBISHOP) | bb_of(board, BKNIGHT);
-      while (attackers) {
-        uint64_t lsb = attackers & -attackers;
-        int sq = __builtin_ctzll(lsb);
-        attackers ^= lsb;
-        int d = king_manhattan(sq, whiteKingSq);
-        if (d < bestAttackerDist) bestAttackerDist = d;
-      }
-      if (bestAttackerDist != 99) {
-        scoreWhite -= (14 - bestAttackerDist) * 2;
-      }
-    }
+    int attackerPull = (nearestAttacker != 99) ? std::max(0, 14 - nearestAttacker) * 2 : 0;
+    int kingAttackBonus = kingActivity + attackerPull;
+    int boostedMk = mkBonus / 2; // extra weight beyond the base Mk bonus
+    scoreWhite += (stm == WHITE ? boostedMk : -boostedMk);
+    scoreWhite += (stm == WHITE ? kingAttackBonus : -kingAttackBonus);
   }
 
   // Encourage advancing pawns toward promotion (White POV).
   {
     uint64_t wp = bb_of(board, WPAWN);
-    while (wp) {
+    while (wp)
+    {
       uint64_t lsb = wp & -wp;
       int sq = __builtin_ctzll(lsb);
       wp ^= lsb;
@@ -548,7 +930,8 @@ int basicEvaluate(const Board &board)
       scoreWhite += rank * 2; // small bonus per rank advanced
     }
     uint64_t bp = bb_of(board, BPAWN);
-    while (bp) {
+    while (bp)
+    {
       uint64_t lsb = bp & -bp;
       int sq = __builtin_ctzll(lsb);
       bp ^= lsb;
