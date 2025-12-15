@@ -19,13 +19,17 @@ if [[ ! -x "$BIN" ]]; then
   echo "Error: cutechess-cli binary not found at $BIN" >&2
   exit 1
 fi
-if [[ ! -d "$LIB1" ]] || [[ ! -d "$LIB2" ]]; then
-  echo "Error: Required Qt library directories not found under $ROOT/squashfs-root" >&2
+# Some AppImage builds only ship usr/lib; tolerate missing usr/lib/x86_64-linux-gnu.
+if [[ ! -d "$LIB1" ]]; then
+  echo "Error: Qt library dir not found: $LIB1" >&2
   exit 1
 fi
 
 # Build a local LD_LIBRARY_PATH without polluting the environment
-NEW_LD_PATH="$LIB1:$LIB2"
+NEW_LD_PATH="$LIB1"
+if [[ -d "$LIB2" ]]; then
+  NEW_LD_PATH="$LIB1:$LIB2"
+fi
 if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
   case ":$LD_LIBRARY_PATH:" in *":$LIB1:"*) : ;; *) NEW_LD_PATH="$NEW_LD_PATH:$LD_LIBRARY_PATH" ;; esac
   case ":$LD_LIBRARY_PATH:" in *":$LIB2:"*) : ;; *) : ;; esac
