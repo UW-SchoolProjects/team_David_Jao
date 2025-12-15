@@ -495,12 +495,6 @@ def main():
     for _ in range(args.workers):
         task_q.put(None)
 
-    threads = []
-    for wid in range(args.workers):
-        t = threading.Thread(target=worker_loop, args=(wid, args, rows, task_q, result_q, fail_logger), daemon=True)
-        t.start()
-        threads.append(t)
-
     written = 0
     processed = 0
     pending = {}
