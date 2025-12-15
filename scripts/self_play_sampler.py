@@ -257,6 +257,13 @@ def play_game(proc: subprocess.Popen, game_id: int, args, rng: random.Random, bu
             and (args.max_halfmove < 0 or halfmove_clock <= args.max_halfmove)
         )
 
+        legal_moves: Optional[List[str]] = None
+        if should_sample:
+            legal_moves = list_moves(proc)
+            if not legal_moves:
+                # Skip terminal/no-move positions; downstream labelers expect at least one legal move.
+                break
+
         # Set a fresh per-move clock to avoid draining over many plies.
         send(proc, f"time {args.clock_cs}")
         send(proc, f"otim {args.clock_cs}")
@@ -279,14 +286,12 @@ def play_game(proc: subprocess.Popen, game_id: int, args, rng: random.Random, bu
             break
         move = parts[1]
         score = request_lastscore(proc)
-        # If engine reports no legal move (terminal), ensure we have a final score, record, then stop.
+
+        # If engine reports no legal move, do not emit this position (unlabelable for policy targets).
         if move == "0000":
-            if score is None:
-                score = request_lastscore(proc)
-            if should_sample and score is not None:
-                rows.append([fen, score, phase, ply, side, game_id, move, halfmove_clock, nonking])
             break
-        if should_sample and score is not None:
+
+        if should_sample and score is not None and (legal_moves is None or move in legal_moves):
             rows.append([fen, score, phase, ply, side, game_id, move, halfmove_clock, nonking])
         ply += 1
     return rows
