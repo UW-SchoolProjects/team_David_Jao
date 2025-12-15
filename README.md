@@ -45,7 +45,7 @@ By default `make` now invokes `scripts/self_play_games.py` and `scripts/opening_
    ```
    Use XBoard to play, watch the log for custom `METRIC` entries, and stop with `fg` + Ctrl+C or `kill`.
 
-## Self-Play Sampling (Task 5.2.1)
+## Self-Play Sampling
 Generates `build/selfplay_positions.csv(.gz)` containing columns `fen, eval_cp, phase, ply, side_to_move, game_id, move`. The sampler assumes the engine runs single-threaded—avoid enabling multi-threaded search or thread-local pools when launching `./program`.
 The sampler:
 
@@ -64,7 +64,7 @@ python3 scripts/self_play_sampler.py \
   --gzip
 ```
 
-## Deep Labeling (Task 5.2.2)
+## Deep Labeling
 Re-runs the single-threaded engine at `depth+2` (or ~3× the shallow time) to compute high-quality targets and stores them in `build/deep_labeled_positions.csv.gz` with two extra fields: `eval_deep_cp` and `eval_deep_norm` (tanh-normalized).
 
 ```bash
