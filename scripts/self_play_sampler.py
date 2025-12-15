@@ -239,14 +239,22 @@ def play_game(proc: subprocess.Popen, game_id: int, args, rng: random.Random, bu
         if len(fields) < 2:
             break
         side = fields[1]
+        halfmove_clock = 0
+        if len(fields) >= 5:
+            try:
+                halfmove_clock = int(fields[4])
+            except ValueError:
+                halfmove_clock = 0
         phase = material_phase(fen)
+        nonking = nonking_material(fen)
         sparse_tail = rng.random() < args.tail_fraction
         in_band = args.phase_min <= phase <= args.phase_max
         should_sample = (
             ply >= args.sample_start
             and ply % args.sample_stride == 0
             and (in_band or sparse_tail)
-            and nonking_material(fen) > 2
+            and nonking >= args.min_nonking
+            and (args.max_halfmove < 0 or halfmove_clock <= args.max_halfmove)
         )
 
         # Set a fresh per-move clock to avoid draining over many plies.
@@ -255,8 +263,16 @@ def play_game(proc: subprocess.Popen, game_id: int, args, rng: random.Random, bu
 
         go_cmd = "white" if side == "w" else "black"
         send(proc, go_cmd)
+        start = time.time()
         move_line = read_until(proc, args.move_timeout, lambda l: l.startswith("move "))
+        elapsed = time.time() - start
         if move_line is None:
+            if args.stall_log:
+                try:
+                    with open(args.stall_log, "a", encoding="utf-8") as stall_fh:
+                        stall_fh.write(f"{game_id},{ply},{elapsed:.3f},{fen}\n")
+                except Exception:
+                    pass
             break
         parts = move_line.split()
         if len(parts) < 2 or not parts[1]:
@@ -268,10 +284,10 @@ def play_game(proc: subprocess.Popen, game_id: int, args, rng: random.Random, bu
             if score is None:
                 score = request_lastscore(proc)
             if should_sample and score is not None:
-                rows.append([fen, score, phase, ply, side, game_id, move])
+                rows.append([fen, score, phase, ply, side, game_id, move, halfmove_clock, nonking])
             break
         if should_sample and score is not None:
-            rows.append([fen, score, phase, ply, side, game_id, move])
+            rows.append([fen, score, phase, ply, side, game_id, move, halfmove_clock, nonking])
         ply += 1
     return rows
 
@@ -287,6 +303,8 @@ def main() -> None:
     parser.add_argument("--phase-min", type=int, default=6, help="Preferred minimum material phase.")
     parser.add_argument("--phase-max", type=int, default=18, help="Preferred maximum material phase.")
     parser.add_argument("--tail-fraction", type=float, default=0.2, help="Fraction of out-of-band phases to keep.")
+    parser.add_argument("--min-nonking", type=int, default=3, help="Minimum non-king pieces required to sample a position.")
+    parser.add_argument("--max-halfmove", type=int, default=99, help="Maximum halfmove clock to sample (-1 disables).")
     parser.add_argument("--random-opening", type=int, default=4, help="Random plies to play before sampling.")
     parser.add_argument("--move-time-ms", type=int, default=150, help="Fixed time per move in ms.")
     parser.add_argument("--clock-cs", type=int, default=1500, help="Clock centiseconds sent before each move.")
@@ -295,6 +313,7 @@ def main() -> None:
     parser.add_argument("--gzip", action="store_true", help="Compress output with gzip (.gz).")
     parser.add_argument("--seed", type=int, default=None, help="RNG seed.")
     parser.add_argument("--move-timeout", type=float, default=5.0, help="Seconds to wait for a move.")
+    parser.add_argument("--stall-log", default="", help="Append stalls (game_id,ply,elapsed,fen) to this path.")
     args = parser.parse_args()
 
     rng = random.Random(args.seed or int(time.time()))
@@ -307,7 +326,7 @@ def main() -> None:
         output_path += ".gz"
     with opener(output_path, mode, newline="") as fh:
         writer = csv.writer(fh)
-        writer.writerow(["fen", "eval_cp", "phase", "ply", "side_to_move", "game_id", "move"])
+        writer.writerow(["fen", "eval_cp", "phase", "ply", "side_to_move", "game_id", "move", "halfmove_clock", "nonking"])
 
         collected = 0
         game_id = 0
