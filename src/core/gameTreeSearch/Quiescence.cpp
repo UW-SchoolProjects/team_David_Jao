@@ -97,7 +97,9 @@ int qsearch(Board &board, int alpha, int beta, int ply, EvalFn evalFn)
 {
   ++g_node_counter;
   // Respect the main search time budget even inside quiescence.
-  if ((g_node_counter & 1023ULL) == 0ULL && search_time_expired()) {
+  // Forced-capture lines can make quiescence unexpectedly expensive; check more frequently
+  // than the main search node-throttle to avoid blowing hard budgets.
+  if ((g_node_counter & 255ULL) == 0ULL && search_time_expired()) {
     return SCORE_TIME_ABORT;
   }
   const int alphaOrig = alpha;

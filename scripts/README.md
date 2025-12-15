@@ -15,7 +15,7 @@
   ```
 - Default filters: sample every 2 plies starting at ply 8, focus on material phase 6–18 with a 20% tail outside that band, skip near-terminal (<=2 non-king pieces).
 - Randomization: plays a few random legal plies at game start using `david_moves` + `usermove` to diversify openings.
-- Output schema: `fen, eval_cp, phase, ply, side_to_move, game_id, move` (CSV, optional gzip).
+- Output schema: `fen, eval_cp, phase, ply, side_to_move, game_id, move, halfmove_clock, nonking` (CSV, optional gzip).
 
 ### Deep labeler (`deep_labeler.py`)
 - Purpose: run depth+2 / ~3× time over sampled positions to produce higher-quality labels.
