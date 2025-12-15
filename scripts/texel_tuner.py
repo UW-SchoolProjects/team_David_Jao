@@ -449,7 +449,24 @@ def clamp_and_round(value: float, clamp: float) -> int:
     return int(round(value))
 
 
-def emit_header(w, path: str, pst_clamp: float, small_clamp: float):
+def clamp_for_emission(w, pst_clamp: float, small_clamp: float, tempo_clamp: float, bias_clamp: float):
+    """Return the weights as they will be emitted to the C++ header (clamped + rounded)."""
+    w_out = list(w)
+    for pt_idx, _ in enumerate(PIECE_ORDER):
+        for sq in range(64):
+            mg_idx = IDX_MG_START + pt_idx * 64 + sq
+            eg_idx = IDX_EG_START + pt_idx * 64 + sq
+            w_out[mg_idx] = float(clamp_and_round(w_out[mg_idx], pst_clamp))
+            w_out[eg_idx] = float(clamp_and_round(w_out[eg_idx], pst_clamp))
+
+    w_out[IDX_BISHOP_PAIR] = float(clamp_and_round(w_out[IDX_BISHOP_PAIR], small_clamp))
+    w_out[IDX_KING_PROX] = float(clamp_and_round(w_out[IDX_KING_PROX], small_clamp))
+    w_out[IDX_TEMPO] = float(clamp_and_round(w_out[IDX_TEMPO], tempo_clamp))
+    w_out[IDX_BIAS] = float(clamp_and_round(w_out[IDX_BIAS], bias_clamp))
+    return w_out
+
+
+def emit_header(w, path: str, pst_clamp: float, small_clamp: float, tempo_clamp: float, bias_clamp: float):
     if len(w) < NUM_FEATURES:
         raise ValueError(f"Weight vector too small: got {len(w)}, expected >= {NUM_FEATURES}")
     dirpath = os.path.dirname(os.path.abspath(path))
@@ -477,9 +494,9 @@ def emit_header(w, path: str, pst_clamp: float, small_clamp: float):
             raise IndexError(f"{idx_name} index {idx} out of range for len(w)={len(w)}")
 
     bp = clamp_and_round(w[IDX_BISHOP_PAIR], small_clamp)
-    tempo = clamp_and_round(w[IDX_TEMPO], small_clamp)
+    tempo = clamp_and_round(w[IDX_TEMPO], tempo_clamp)
     king_prox = clamp_and_round(w[IDX_KING_PROX], small_clamp)
-    bias = clamp_and_round(w[IDX_BIAS], small_clamp)
+    bias = clamp_and_round(w[IDX_BIAS], bias_clamp)
 
     def fmt_table(table):
         lines = []
@@ -544,7 +561,9 @@ def parse_args():
     p.add_argument("--logistic-scale", type=float, default=400.0, help="Scale for Texel logistic loss.")
     p.add_argument("--mse-scale", type=float, default=50.0, help="Normalization for cp MSE (objective=cp).")
     p.add_argument("--pst-clamp", type=float, default=200.0, help="Clamp for PST weights.")
-    p.add_argument("--small-clamp", type=float, default=50.0, help="Clamp for bishop pair/tempo/etc.")
+    p.add_argument("--small-clamp", type=float, default=50.0, help="Clamp for bishop pair / king proximity.")
+    p.add_argument("--tempo-clamp", type=float, default=50.0, help="Clamp for tempo bonus.")
+    p.add_argument("--bias-clamp", type=float, default=50.0, help="Clamp for eval bias.")
     p.add_argument("--objective", choices=("sign", "cp"), default="cp", help="Training objective: sign-classification or cp-regression.")
     p.add_argument("--require-deep", action="store_true", help="Only use eval_deep_cp; skip rows without deep labels.")
     p.add_argument("--label-clamp", type=int, default=2000, help="Clamp labels to +/-N centipawns (0 disables).")
@@ -620,7 +639,21 @@ def main():
     else:
         print(f"Texel sign accuracy: train={train_acc*100:.2f}% val={val_acc*100:.2f}%")
 
-    emit_header(w, args.output_header, args.pst_clamp, args.small_clamp)
+    w_emitted = clamp_for_emission(w, args.pst_clamp, args.small_clamp, args.tempo_clamp, args.bias_clamp)
+    if any(a != b for a, b in zip(w, w_emitted)):
+        train_acc_e = accuracy(train_samples, w_emitted)
+        val_acc_e = accuracy(val_samples, w_emitted)
+        if args.objective == "cp":
+            train_rmse_e = rmse(train_samples, w_emitted)
+            val_rmse_e = rmse(val_samples, w_emitted)
+            print(
+                f"RMSE(cp, emitted): train={train_rmse_e:.1f} val={val_rmse_e:.1f} | "
+                f"sign_acc: train={train_acc_e*100:.2f}% val={val_acc_e*100:.2f}%"
+            )
+        else:
+            print(f"Texel sign accuracy (emitted): train={train_acc_e*100:.2f}% val={val_acc_e*100:.2f}%")
+
+    emit_header(w_emitted, args.output_header, args.pst_clamp, args.small_clamp, args.tempo_clamp, args.bias_clamp)
 
 
 if __name__ == "__main__":
