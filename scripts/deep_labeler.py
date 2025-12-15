@@ -16,8 +16,8 @@ import subprocess
 import threading
 import time
 from collections import deque
-from queue import Queue
-from typing import Dict, Iterable, Optional, Tuple
+from queue import Empty, Full, Queue
+from typing import Optional
 
 
 class FailLogger:
@@ -46,18 +46,27 @@ def send(proc: subprocess.Popen, cmd: str) -> bool:
         return False
 
 
-def read_until(proc: subprocess.Popen, timeout: float, predicate, line_handler=None) -> Optional[str]:
+def read_until(
+    proc: subprocess.Popen,
+    timeout: float,
+    predicate,
+    line_handler=None,
+    stop_event: Optional[threading.Event] = None,
+) -> Optional[str]:
     end = time.time() + timeout
     bytes_read = 0
     lines_read = 0
     max_bytes = 1_000_000
     max_lines = 10_000
     while time.time() < end:
+        if stop_event is not None and stop_event.is_set():
+            return None
         remaining = max(0.0, end - time.time())
         if proc.poll() is not None:
             return None
         try:
-            ready, _, _ = select.select([proc.stdout], [], [], remaining)
+            poll_slice = min(remaining, 0.1) if stop_event is not None else remaining
+            ready, _, _ = select.select([proc.stdout], [], [], poll_slice)
         except (ValueError, OSError):
             return None
         if not ready:
@@ -211,6 +220,8 @@ def drain_stderr(proc: subprocess.Popen, fail_logger: Optional[FailLogger] = Non
     if not proc.stderr:
         return
     try:
+        # Always drain stderr to avoid blocking the engine when its stderr pipe fills.
+        # Only write to the fail log when explicitly requested.
         while True:
             ready, _, _ = select.select([proc.stderr], [], [], 0)
             if not ready:
@@ -263,7 +274,15 @@ def dump_engine_output(proc: subprocess.Popen, fail_logger: FailLogger, header: 
     fail_logger.write("--------------------------------")
 
 
-def evaluate_position(proc: subprocess.Popen, fen: str, side: str, args, move_timeout: float, fail_logger: FailLogger) -> Optional[int]:
+def evaluate_position(
+    proc: subprocess.Popen,
+    fen: str,
+    side: str,
+    args,
+    move_timeout: float,
+    fail_logger: FailLogger,
+    stop_event: Optional[threading.Event] = None,
+) -> Optional[int]:
     drain_stdout(proc)
     if not send(proc, f"setboard {fen}"):
         fail_logger.write(f"FAIL: 'setboard' rejected for FEN: {fen}")
@@ -301,10 +320,17 @@ def evaluate_position(proc: subprocess.Popen, fen: str, side: str, args, move_ti
         move_timeout,
         lambda l: l.startswith("move ") or l in ("1-0", "0-1", "1/2-1/2"),
         line_handler=handle_output,
+        stop_event=stop_event,
     )
     elapsed = time.time() - start_time
 
     if move_line is None:
+        if stop_event is not None and stop_event.is_set():
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            return None
         exit_code = proc.poll()
         if exit_code is not None:
             fail_logger.write(f"CRASH: engine exited (code {exit_code}) after {elapsed:.2f}s on FEN: {fen}")
@@ -376,14 +402,25 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def worker_loop(worker_id: int, args: argparse.Namespace, task_q: Queue, result_q: Queue, fail_logger: FailLogger) -> None:
+def worker_loop(
+    worker_id: int,
+    args: argparse.Namespace,
+    task_q: Queue,
+    result_q: Queue,
+    fail_logger: FailLogger,
+    stop_event: threading.Event,
+) -> None:
     proc = restart_engine(args, fail_logger)
     if proc is None:
         fail_logger.write(f"worker {worker_id}: failed to start engine; marking tasks as failed")
         while True:
-            task = task_q.get()
+            try:
+                task = task_q.get(timeout=0.1)
+            except Empty:
+                if stop_event.is_set():
+                    break
+                continue
             if task is None:
-                task_q.put(None)  # ensure other workers see the sentinel
                 break
             idx, _ = task
             result_q.put((idx, None))
@@ -391,11 +428,18 @@ def worker_loop(worker_id: int, args: argparse.Namespace, task_q: Queue, result_
 
     try:
         while True:
-            task = task_q.get()
+            try:
+                task = task_q.get(timeout=0.1)
+            except Empty:
+                if stop_event.is_set():
+                    break
+                continue
             if task is None:
-                task_q.put(None)  # propagate shutdown
                 break
             idx, row = task
+            if stop_event.is_set():
+                result_q.put((idx, None))
+                continue
 
             if proc.poll() is not None:
                 proc = restart_engine(args, fail_logger)
@@ -416,7 +460,7 @@ def worker_loop(worker_id: int, args: argparse.Namespace, task_q: Queue, result_
             default_side = parts[1] if len(parts) >= 2 else "w"
             side = row.get("side_to_move") or default_side
 
-            score = evaluate_position(proc, fen, side, args, args.move_timeout, fail_logger)
+            score = evaluate_position(proc, fen, side, args, args.move_timeout, fail_logger, stop_event=stop_event)
             if score is None:
                 result_q.put((idx, None))
                 continue
@@ -452,87 +496,164 @@ def main():
 
     task_q: Queue = Queue(maxsize=max(1, args.workers * 4))
     result_q: Queue = Queue()
+    stop_event = threading.Event()
 
     # Kick off workers
     threads = []
     for wid in range(args.workers):
-        t = threading.Thread(target=worker_loop, args=(wid, args, task_q, result_q, fail_logger), daemon=False)
+        t = threading.Thread(
+            target=worker_loop,
+            args=(wid, args, task_q, result_q, fail_logger, stop_event),
+            daemon=False,
+        )
         t.start()
         threads.append(t)
 
-    # Stream input and feed tasks
-    with open_reader(args.input) as fh:
-        reader = csv.DictReader(fh)
-        if not reader.fieldnames:
-            fail_logger.write("fatal: input has no header")
-            fail_logger.close()
-            for _ in range(args.workers):
-                task_q.put(None)
-            for t in threads:
-                t.join()
-            return
-
-        base_fields = [f for f in reader.fieldnames if f not in ("eval_deep_cp", "eval_deep_norm")]
-        fieldnames = base_fields + ["eval_deep_cp", "eval_deep_norm"]
-
-        total = 0
-        for idx, row in enumerate(reader):
-            if args.limit and args.limit > 0 and idx >= args.limit:
-                break
-            task_q.put((idx, row))
-            total += 1
-
-    if total == 0:
-        fail_logger.write("fatal: input has no rows")
-        fail_logger.close()
-        for _ in range(args.workers):
-            task_q.put(None)
-        for t in threads:
-            t.join()
-        return
-
-    # Signal shutdown
-    for _ in range(args.workers):
-        task_q.put(None)
-
-    written = 0
+    total_enqueued = 0
     processed = 0
+    written = 0
     pending = {}
     next_to_write = 0
+    interrupted = False
+    input_done = False
     start = time.time()
+    target_total = args.limit if args.limit and args.limit > 0 else None
 
-    with open_writer(args.output) as out_fh:
-        writer = csv.DictWriter(out_fh, fieldnames=fieldnames)
-        writer.writeheader()
+    def flush_shutdown() -> None:
+        stop_event.set()
+        for _ in range(args.workers):
+            try:
+                task_q.put_nowait(None)
+            except Full:
+                break
 
-        while processed < total:
-            idx, row_out = result_q.get()
-            processed += 1
-            pending[idx] = row_out
+    try:
+        with open_reader(args.input) as fh:
+            reader = csv.DictReader(fh)
+            if not reader.fieldnames:
+                fail_logger.write("fatal: input has no header")
+                flush_shutdown()
+                return
 
-            while next_to_write in pending:
-                out_row = pending.pop(next_to_write)
-                if out_row is not None:
-                    writer.writerow(out_row)
-                    written += 1
-                next_to_write += 1
+            base_fields = [f for f in reader.fieldnames if f not in ("eval_deep_cp", "eval_deep_norm")]
+            fieldnames = base_fields + ["eval_deep_cp", "eval_deep_norm"]
 
-            if args.progress_every > 0 and processed % args.progress_every == 0:
-                elapsed = max(1e-6, time.time() - start)
-                rate = processed / elapsed
-                remaining = total - processed
-                eta_s = remaining / max(1e-6, rate)
-                print(f"{processed}/{total} processed, {written} labeled, {rate:.1f} pos/s, ETA {eta_s/60.0:.1f} min")
+            with open_writer(args.output) as out_fh:
+                writer = csv.DictWriter(out_fh, fieldnames=fieldnames)
+                writer.writeheader()
+                start = time.time()
+
+                def maybe_print_progress() -> None:
+                    if args.progress_every <= 0 or processed == 0 or processed % args.progress_every != 0:
+                        return
+                    elapsed = max(1e-6, time.time() - start)
+                    rate = processed / elapsed
+                    if target_total is not None and not input_done:
+                        denom = target_total
+                    elif input_done:
+                        denom = total_enqueued
+                    else:
+                        denom = None
+                    if denom is not None:
+                        remaining = max(0, denom - processed)
+                        eta_s = remaining / max(1e-6, rate)
+                        print(f"{processed}/{denom} processed, {written} labeled, {rate:.1f} pos/s, ETA {eta_s/60.0:.1f} min")
+                    else:
+                        print(f"{processed} processed (enqueued {total_enqueued}), {written} labeled, {rate:.1f} pos/s")
+                    try:
+                        out_fh.flush()
+                    except Exception:
+                        pass
+
+                def handle_result(idx: int, row_out) -> None:
+                    nonlocal processed, written, next_to_write
+                    processed += 1
+                    pending[idx] = row_out
+                    while next_to_write in pending:
+                        out_row = pending.pop(next_to_write)
+                        if out_row is not None:
+                            writer.writerow(out_row)
+                            written += 1
+                        next_to_write += 1
+                    maybe_print_progress()
+
+                def drain_results(max_items: Optional[int] = None) -> None:
+                    drained = 0
+                    while True:
+                        if max_items is not None and drained >= max_items:
+                            return
+                        try:
+                            idx_out, row_out = result_q.get_nowait()
+                        except Empty:
+                            return
+                        handle_result(idx_out, row_out)
+                        drained += 1
+
+                def put_task(item) -> bool:
+                    while True:
+                        if stop_event.is_set():
+                            return False
+                        try:
+                            task_q.put(item, timeout=0.1)
+                            return True
+                        except Full:
+                            drain_results()
+
                 try:
-                    out_fh.flush()
-                except Exception:
-                    pass
+                    for idx, row in enumerate(reader):
+                        if target_total is not None and idx >= target_total:
+                            break
+                        if not put_task((idx, row)):
+                            break
+                        total_enqueued += 1
+                        drain_results()
+                    input_done = True
 
-    for t in threads:
-        t.join()
+                    if total_enqueued == 0:
+                        fail_logger.write("fatal: input has no rows")
+                        flush_shutdown()
+                        return
 
-    fail_logger.close()
-    print(f"Deep labeling done. Input rows: {total}, labeled: {written}, output: {args.output}")
+                    for _ in range(args.workers):
+                        if not put_task(None):
+                            break
+
+                    while processed < total_enqueued:
+                        try:
+                            idx_out, row_out = result_q.get(timeout=0.1)
+                        except Empty:
+                            if not any(t.is_alive() for t in threads):
+                                break
+                            continue
+                        handle_result(idx_out, row_out)
+                    drain_results()
+                except KeyboardInterrupt:
+                    interrupted = True
+                    input_done = True
+                    fail_logger.write("KeyboardInterrupt: cancelling remaining work")
+                    stop_event.set()
+
+                    while processed < total_enqueued:
+                        try:
+                            idx_out, row_out = result_q.get(timeout=0.1)
+                        except Empty:
+                            if not any(t.is_alive() for t in threads):
+                                break
+                            continue
+                        handle_result(idx_out, row_out)
+                    drain_results()
+    except KeyboardInterrupt:
+        interrupted = True
+        fail_logger.write("KeyboardInterrupt: cancelling remaining work")
+        stop_event.set()
+    finally:
+        flush_shutdown()
+        for t in threads:
+            t.join()
+        fail_logger.close()
+
+    tag = "Interrupted" if interrupted else "Deep labeling done"
+    print(f"{tag}. Input rows: {total_enqueued}, labeled: {written}, output: {args.output}")
 
 
 if __name__ == "__main__":

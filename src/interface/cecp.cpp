@@ -90,6 +90,8 @@ See LICENSE file for details.
 #include <chrono>
 #include <iostream>
 #include <sstream>
+#include <fstream>
+#include <unordered_map>
 #include <cstdlib>
 #include <cstdio>
 #include <cctype>
@@ -107,6 +109,7 @@ See LICENSE file for details.
 #include <string> // Required for std::to_string()
 #include <iostream> // For printing output
 #include <chrono>
+#include <cstdint>
 
 // ---------------------------
 // Small helpers
@@ -134,6 +137,117 @@ static inline void log_board_fen(const Board &, const char * = nullptr) {}
 // Unconditional diagnostic logging to stderr (safe for protocol).
 static inline void diag_log(const std::string &msg) {
     std::cerr << "[diag] " << msg << std::endl;
+}
+
+// ---------------------------
+// Opening book
+// ---------------------------
+
+struct OpeningBook {
+    std::unordered_map<uint64_t, std::string> entries;
+    bool loaded = false;
+
+    bool load_from_file(const std::string &path) {
+        if (loaded) return !entries.empty();
+        std::ifstream in(path);
+        if (!in) {
+            diag_log("opening_book: missing file at " + path);
+            loaded = true;
+            return false;
+        }
+        std::stringstream buffer;
+        buffer << in.rdbuf();
+        std::string s = buffer.str();
+        size_t i = 0;
+        auto skip_ws = [&](size_t &pos) {
+            while (pos < s.size() && std::isspace(static_cast<unsigned char>(s[pos]))) ++pos;
+        };
+        skip_ws(i);
+        if (i >= s.size() || s[i] != '{') {
+            diag_log("opening_book: invalid JSON map format");
+            loaded = true;
+            return false;
+        }
+        ++i;
+        while (i < s.size()) {
+            skip_ws(i);
+            if (i < s.size() && s[i] == '}') break;
+            if (i >= s.size() || s[i] != '"') break;
+            ++i;
+            size_t start_key = i;
+            while (i < s.size() && s[i] != '"') ++i;
+            if (i >= s.size()) break;
+            std::string key_str = s.substr(start_key, i - start_key);
+            ++i;
+            skip_ws(i);
+            if (i >= s.size() || s[i] != ':') break;
+            ++i;
+            skip_ws(i);
+            if (i >= s.size() || s[i] != '"') break;
+            ++i;
+            size_t start_val = i;
+            while (i < s.size() && s[i] != '"') ++i;
+            if (i >= s.size()) break;
+            std::string move_str = s.substr(start_val, i - start_val);
+            ++i;
+            uint64_t key = 0;
+            try {
+                key = std::stoull(key_str, nullptr, 16);
+            } catch (const std::exception &) {
+                diag_log("opening_book: bad key " + key_str);
+            }
+            if (!move_str.empty()) {
+                entries[key] = move_str;
+            }
+            skip_ws(i);
+            if (i < s.size() && s[i] == ',') {
+                ++i;
+                continue;
+            }
+        }
+        loaded = true;
+        diag_log("opening_book: loaded " + std::to_string(entries.size()) + " entries from " + path);
+        return !entries.empty();
+    }
+
+    bool lookup(uint64_t key, std::string &uci) const {
+        auto it = entries.find(key);
+        if (it == entries.end()) return false;
+        uci = it->second;
+        return true;
+    }
+};
+
+static OpeningBook g_book;
+static const char *BOOK_PATH = "build/opening_book_map.json";
+
+static bool book_move_for_root(EngineSession &sess, const MoveList &rootMoves, Move &out) {
+    if (!g_book.loaded) {
+        g_book.load_from_file(BOOK_PATH);
+    }
+    std::string uci;
+    if (!g_book.lookup(sess.board.zobrist_key, uci)) {
+        return false;
+    }
+    Move parsed;
+    if (!parse_uci_move(sess.board, uci, parsed)) {
+        diag_log("opening_book: book move illegal in position key=" + std::to_string(sess.board.zobrist_key) + " uci=" + uci);
+        return false;
+    }
+    bool found_in_root = false;
+    for (int i = 0; i < rootMoves.count; ++i) {
+        if (rootMoves.moves[i].raw() == parsed.raw()) {
+            found_in_root = true;
+            break;
+        }
+    }
+    if (!found_in_root) {
+        diag_log("opening_book: parsed move not in root move list uci=" + uci);
+        return false;
+    }
+    out = parsed;
+    diag_log("opening_book: hit key=" + std::to_string(sess.board.zobrist_key) + " move=" + uci + " stm=" + std::string(sess.board.side == WHITE ? "w" : "b"));
+    return true;
 }
 
 static inline int opposite_side(int s) {
@@ -338,6 +452,13 @@ static Move search_best_move(EngineSession &sess) {
                  " score=" + std::to_string(sess.last_root_score) +
                  " move=0000");
         return Move(); // null move signals terminal
+    }
+
+    // Opening book (root only)
+    Move bookMove;
+    if (book_move_for_root(sess, rootMoves, bookMove)) {
+        diag_log("search_best_move: using book move " + move_to_uci(bookMove));
+        return bookMove;
     }
 
     int remaining = sess.my_time_ms > 0 ? sess.my_time_ms : 50;
