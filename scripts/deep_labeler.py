@@ -376,22 +376,26 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def worker_loop(worker_id: int, args: argparse.Namespace, rows: list, task_q: Queue, result_q: Queue, fail_logger: FailLogger) -> None:
+def worker_loop(worker_id: int, args: argparse.Namespace, task_q: Queue, result_q: Queue, fail_logger: FailLogger) -> None:
     proc = restart_engine(args, fail_logger)
     if proc is None:
         fail_logger.write(f"worker {worker_id}: failed to start engine; marking tasks as failed")
         while True:
-            idx = task_q.get()
-            if idx is None:
+            task = task_q.get()
+            if task is None:
+                task_q.put(None)  # ensure other workers see the sentinel
                 break
+            idx, _ = task
             result_q.put((idx, None))
         return
 
     try:
         while True:
-            idx = task_q.get()
-            if idx is None:
+            task = task_q.get()
+            if task is None:
+                task_q.put(None)  # propagate shutdown
                 break
+            idx, row = task
 
             if proc.poll() is not None:
                 proc = restart_engine(args, fail_logger)
@@ -402,7 +406,6 @@ def worker_loop(worker_id: int, args: argparse.Namespace, rows: list, task_q: Qu
 
             drain_stderr(proc, fail_logger if args.log_engine_stderr else None)
 
-            row = rows[idx]
             fen = (row.get("fen") or "").strip()
             if not fen:
                 fail_logger.write(f"{idx}: missing fen")
@@ -447,35 +450,48 @@ def main():
 
     fail_logger = FailLogger(args.fail_log)
 
+    task_q: Queue = Queue(maxsize=max(1, args.workers * 4))
+    result_q: Queue = Queue()
+
+    # Kick off workers
+    threads = []
+    for wid in range(args.workers):
+        t = threading.Thread(target=worker_loop, args=(wid, args, task_q, result_q, fail_logger), daemon=False)
+        t.start()
+        threads.append(t)
+
+    # Stream input and feed tasks
     with open_reader(args.input) as fh:
         reader = csv.DictReader(fh)
         if not reader.fieldnames:
             fail_logger.write("fatal: input has no header")
             fail_logger.close()
+            for _ in range(args.workers):
+                task_q.put(None)
+            for t in threads:
+                t.join()
             return
 
         base_fields = [f for f in reader.fieldnames if f not in ("eval_deep_cp", "eval_deep_norm")]
         fieldnames = base_fields + ["eval_deep_cp", "eval_deep_norm"]
 
-        rows = list(reader)
-        if args.limit and args.limit > 0:
-            rows = rows[: args.limit]
+        total = 0
+        for idx, row in enumerate(reader):
+            if args.limit and args.limit > 0 and idx >= args.limit:
+                break
+            task_q.put((idx, row))
+            total += 1
 
-    total = len(rows)
     if total == 0:
         fail_logger.write("fatal: input has no rows")
         fail_logger.close()
+        for _ in range(args.workers):
+            task_q.put(None)
+        for t in threads:
+            t.join()
         return
 
-    args.workers = max(1, int(args.workers))
-    if args.workers > total:
-        args.workers = total
-
-    task_q: Queue = Queue()
-    result_q: Queue = Queue()
-
-    for idx in range(total):
-        task_q.put(idx)
+    # Signal shutdown
     for _ in range(args.workers):
         task_q.put(None)
 

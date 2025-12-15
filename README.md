@@ -75,6 +75,7 @@ Failures (timeouts, malformed FENs, etc.) are recorded in `build/deep_label_fail
 ## Additional Scripts
 - `scripts/blitz_gauntlet.sh`: run 1+0 gauntlet matches between engine builds (uses bundled `cutechess-cli` wrapper).
 - `scripts/run_engine.sh`: helper to boot the engine under XBoard/CECP (set +x and use `xboard -fcp ./scripts/run_engine.sh`).
+- `scripts/opening_book_miner.py`: mine NDJSON self-play for opening W/D/L stats over the first N plies, emitting a compact book map (`hex_key -> best_move`) plus detailed per-move counts (prefers precomputed `ply_data` entries with `zobrist_key`, otherwise replays plies through `./program`).
 
 ## Tests
 - `python3 -m py_compile scripts/self_play_sampler.py scripts/deep_labeler.py` ensures the helpers parse.
