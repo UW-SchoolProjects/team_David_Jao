@@ -153,7 +153,8 @@ static bool parse_json_string(const std::string &s, size_t &pos, std::string &ou
         if (ch == '"') {
             return true;
         }
-        if (ch == '\\' && pos < s.size()) {
+        if (ch == '\\') {
+            if (pos >= s.size()) return false;
             char esc = s[pos++];
             switch (esc) {
                 case '"': out.push_back('"'); break;
@@ -164,9 +165,34 @@ static bool parse_json_string(const std::string &s, size_t &pos, std::string &ou
                 case 'n': out.push_back('\n'); break;
                 case 'r': out.push_back('\r'); break;
                 case 't': out.push_back('\t'); break;
-                default: out.push_back(esc); break;
+                case 'u': {
+                    if (pos + 4 > s.size()) return false;
+                    unsigned value = 0;
+                    for (int i = 0; i < 4; ++i) {
+                        char h = s[pos++];
+                        value <<= 4;
+                        if (h >= '0' && h <= '9') value |= (h - '0');
+                        else if (h >= 'a' && h <= 'f') value |= (h - 'a' + 10);
+                        else if (h >= 'A' && h <= 'F') value |= (h - 'A' + 10);
+                        else return false;
+                    }
+                    if (value <= 0x7F) {
+                        out.push_back(static_cast<char>(value));
+                    } else if (value <= 0x7FF) {
+                        out.push_back(static_cast<char>(0xC0 | ((value >> 6) & 0x1F)));
+                        out.push_back(static_cast<char>(0x80 | (value & 0x3F)));
+                    } else {
+                        out.push_back(static_cast<char>(0xE0 | ((value >> 12) & 0x0F)));
+                        out.push_back(static_cast<char>(0x80 | ((value >> 6) & 0x3F)));
+                        out.push_back(static_cast<char>(0x80 | (value & 0x3F)));
+                    }
+                    break;
+                }
+                default:
+                    return false;
             }
         } else {
+            if (static_cast<unsigned char>(ch) < 0x20) return false;
             out.push_back(ch);
         }
     }
@@ -301,7 +327,20 @@ static OpeningBook g_book;
 
 static bool book_move_for_root(EngineSession &sess, const MoveList &rootMoves, Move &out) {
     if (!g_book.loaded) {
-        g_book.load_from_file(BOOK_PATH);
+        {
+            std::ifstream in_sz(BOOK_PATH, std::ios::binary | std::ios::ate);
+            if (in_sz) {
+                std::streamsize sz = in_sz.tellg();
+                const std::streamsize kMaxSize = static_cast<std::streamsize>(64) * 1024 * 1024;
+                if (sz > kMaxSize) {
+                    diag_log("opening_book: file too large, refusing to load (" + std::to_string(static_cast<long long>(sz)) + " bytes)");
+                    g_book.loaded = true;
+                }
+            }
+        }
+        if (!g_book.loaded) {
+            g_book.load_from_file(BOOK_PATH);
+        }
     }
     std::string uci;
     if (!g_book.lookup(sess.board.zobrist_key, uci)) {
@@ -310,6 +349,10 @@ static bool book_move_for_root(EngineSession &sess, const MoveList &rootMoves, M
     Move parsed;
     if (!parse_uci_move(sess.board, uci, parsed)) {
         diag_log("opening_book: book move illegal in position key=" + format_key_hex(sess.board.zobrist_key) + " uci=" + uci);
+        return false;
+    }
+    if (parsed.isNull()) {
+        diag_log("opening_book: null move rejected for key=" + format_key_hex(sess.board.zobrist_key));
         return false;
     }
     bool found_in_root = false;

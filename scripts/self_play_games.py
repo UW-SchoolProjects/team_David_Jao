@@ -163,13 +163,28 @@ def start_engine(cmd: str) -> subprocess.Popen:
         shlex.split(cmd),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,  # capture for debugging and to avoid pipe fill
         text=True,
         encoding="utf-8",
         errors="replace",
         bufsize=0,
     )
     return proc
+
+def _drain_stderr_nonblock(proc: subprocess.Popen) -> None:
+    if not proc.stderr:
+        return
+    try:
+        r, _, _ = select.select([proc.stderr], [], [], 0)
+        while r:
+            line = proc.stderr.readline()
+            if not line:
+                break
+            sys.stderr.write(line)
+            sys.stderr.flush()
+            r, _, _ = select.select([proc.stderr], [], [], 0)
+    except Exception:
+        pass
 
 def handshake(proc: subprocess.Popen, move_time_ms: int, depth: int, timeout: float = 1.0) -> bool:
     if not send(proc, "xboard"):
@@ -182,7 +197,9 @@ def handshake(proc: subprocess.Popen, move_time_ms: int, depth: int, timeout: fl
     send(proc, f"stms {move_time_ms}")
     send(proc, f"time {move_time_ms*10}")
     send(proc, f"otim {move_time_ms*10}")
+    _drain_stderr_nonblock(proc)
     probe = query_prefix(proc, "david_fen", "fen ", timeout=timeout)
+    _drain_stderr_nonblock(proc)
     return probe is not None
 
 def request_fen(proc: subprocess.Popen) -> Optional[str]:
@@ -194,9 +211,11 @@ def request_fen(proc: subprocess.Popen) -> Optional[str]:
 def engine_best_move(proc: subprocess.Popen, side: str, move_timeout: float) -> Optional[str]:
     go_cmd = "white" if side == "w" else "black"
     send(proc, go_cmd)
-    line = read_until(proc, move_timeout, lambda l: l.startswith("move "))
+    line = read_until(proc, move_timeout, lambda l: l.startswith("move ") or l in ("1-0", "0-1", "1/2-1/2"))
     if line is None:
         return None
+    if line in ("1-0", "0-1", "1/2-1/2"):
+        return line  # terminal result surfaced by engine
     parts = line.split()
     return parts[1] if len(parts) >= 2 else None
 
@@ -221,21 +240,32 @@ def play_game(proc: subprocess.Popen, game_id: int, max_plies: int, move_timeout
         mv = engine_best_move(proc, side, move_timeout)
         if mv is None:
             return None
+        if mv in ("1-0", "0-1", "1/2-1/2"):
+            result = mv
+            return {"moves": moves, "result": result, "start_fen": start_fen, "ply_data": ply_data, "game_id": game_id}
         moves.append(mv)
         ply_data.append({"fen": fen, "zobrist_key": f"{key:016x}", "move": mv})
         send(proc, f"usermove {mv}")
-    # determine result
-    legal = list_moves(proc)
-    stm = request_fen(proc)
-    side = stm.split()[1] if stm else "w"
-    in_check = False
-    if legal == []:
-        # no moves: mate or stalemate
-        in_check = False  # engine lacks check probe here; default to draw
-    result = "1/2-1/2"
-    if legal == []:
-        if in_check:
-            result = "0-1" if side == "w" else "1-0"
+    # determine result: prefer explicit result line if emitted
+    res_line = read_until(proc, 0.5, lambda l: l in ("1-0", "0-1", "1/2-1/2"))
+    if res_line in ("1-0", "0-1", "1/2-1/2"):
+        result = res_line
+    else:
+        legal = list_moves(proc)
+        stm = request_fen(proc)
+        side = stm.split()[1] if stm else "w"
+        in_check = False
+        chk = query_prefix(proc, "david_check", "check ")
+        if chk is not None:
+            try:
+                in_check = bool(int(chk.split()[1]))
+            except Exception:
+                in_check = False
+        if legal == []:
+            if in_check:
+                result = "0-1" if side == "w" else "1-0"
+            else:
+                result = "1/2-1/2"
         else:
             result = "1/2-1/2"
     return {"moves": moves, "result": result, "start_fen": start_fen, "ply_data": ply_data, "game_id": game_id}

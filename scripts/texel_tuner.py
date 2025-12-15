@@ -11,7 +11,8 @@ Takes the deep-labeled CSV from Task 5.2.2 and fits:
 Outputs a C++ header with constexpr tables/constants ready to drop into eval.cpp.
 
 Notes:
-- Uses sign(labels) as targets (cp from side-to-move POV). Zero/blank labels are skipped.
+- Supports two objectives: `sign` (Texel logistic) and `cp` (centipawn regression).
+- For `sign`, zero/blank labels are skipped (ambiguous target).
 - Handles positions even if there are no legal moves (purely parses FEN, no move gen).
 - Clamps PST weights to +/-200, small terms to +/-50 before emission.
 """
@@ -267,13 +268,16 @@ def sigmoid(x: float) -> float:
 
 
 def train(samples: List[Sample], args):
+    objective = args.objective
+    optimizer = getattr(args, "optimizer", "sgd")
+    if objective == "cp" and optimizer == "ridge":
+        return train_ridge(samples, args)
+
     w = [0.0] * NUM_FEATURES
     lr = args.lr
     batch_size = args.batch_size
     l2 = args.l2
     scale = args.logistic_scale
-    objective = args.objective
-    optimizer = getattr(args, "optimizer", "sgd")
     if objective == "cp":
         scale = float(args.mse_scale)
         if scale <= 0:
@@ -353,6 +357,46 @@ def train(samples: List[Sample], args):
             max_w = max(abs(x) for x in w) if w else 0.0
             print(f"Epoch {epoch+1}/{args.epochs}: avg_loss={avg_loss:.4f} (max|w|={max_w:.3f})")
     return w
+
+
+def train_ridge(samples: List[Sample], args):
+    if args.objective != "cp":
+        raise ValueError("optimizer=ridge is only supported for objective=cp")
+    try:
+        import numpy as np
+    except Exception as e:  # pragma: no cover
+        raise RuntimeError("optimizer=ridge requires numpy; use --optimizer adam/sgd instead") from e
+
+    n = len(samples)
+    if n == 0:
+        return [0.0] * NUM_FEATURES
+
+    scale = float(args.mse_scale)
+    if scale <= 0:
+        raise ValueError("--mse-scale must be > 0 for objective=cp")
+
+    X = np.zeros((n, NUM_FEATURES), dtype=np.float64)
+    y = np.zeros(n, dtype=np.float64)
+    for i, s in enumerate(samples):
+        y[i] = s.label - s.base
+        for idx, val in s.features:
+            X[i, idx] = val
+
+    xtx = X.T @ X
+    xty = X.T @ y
+
+    # Objective in SGD form:
+    #   (1/(2n)) * ||(Xw - y)/scale||^2 + (l2/2) * ||w||^2
+    # => normal eq:
+    #   (XᵀX + n*scale^2*l2 * I) w = Xᵀy
+    lam = float(n) * (scale * scale) * float(args.l2)
+    if lam > 0:
+        xtx.flat[:: NUM_FEATURES + 1] += lam
+
+    w = np.linalg.solve(xtx, xty)
+    max_w = float(np.max(np.abs(w))) if w.size else 0.0
+    print(f"Ridge solve: max|w|={max_w:.3f} (lambda={lam:.3f})")
+    return w.tolist()
 
 
 def predict_sign(sample: Sample, w) -> int:
@@ -481,7 +525,12 @@ def parse_args():
     p.add_argument("--max-samples", type=int, default=0, help="Limit number of samples (0 = all).")
     p.add_argument("--seed", type=int, default=13, help="RNG seed.")
     p.add_argument("--epochs", type=int, default=8, help="Training epochs.")
-    p.add_argument("--optimizer", choices=("adam", "sgd"), default="adam", help="Optimizer (default: adam).")
+    p.add_argument(
+        "--optimizer",
+        choices=("adam", "sgd", "ridge"),
+        default=None,
+        help="Optimizer/solver: ridge (closed-form for objective=cp), or adam/sgd (iterative).",
+    )
     p.add_argument("--batch-size", type=int, default=128, help="Batch size for training.")
     p.add_argument("--lr", type=float, default=0.01, help="Learning rate.")
     p.add_argument("--l2", type=float, default=1e-4, help="L2 weight decay.")
@@ -527,6 +576,8 @@ def load_samples(path: str, max_samples: int, objective: str, require_deep: bool
 
 def main():
     args = parse_args()
+    if args.optimizer is None:
+        args.optimizer = "ridge" if args.objective == "cp" else "adam"
     random.seed(args.seed)
     samples = load_samples(args.input, args.max_samples, args.objective, args.require_deep, args.label_clamp)
     if not samples:
