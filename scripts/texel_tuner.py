@@ -150,19 +150,21 @@ def parse_fen(fen: str):
 class Sample:
     base: float
     features: List[Tuple[int, float]]
-    label: int  # +1 or -1
+    label: float  # objective-dependent (e.g., cp or +/-1)
 
 
 # ---------------------------------------------------------------------------
 # Feature extraction
 # ---------------------------------------------------------------------------
 
-def build_sample(fen: str, label_cp: int) -> Optional[Sample]:
+def build_sample(fen: str, label_cp: int, objective: str, label_clamp: int) -> Optional[Sample]:
     squares, side = parse_fen(fen)
     if squares is None or side not in ("w", "b"):
         return None
     if label_cp == 0:
         return None
+    if label_clamp > 0:
+        label_cp = max(-label_clamp, min(label_clamp, label_cp))
 
     stm_sign = 1 if side == "w" else -1
 
@@ -240,7 +242,13 @@ def build_sample(fen: str, label_cp: int) -> Optional[Sample]:
     # Bias term
     scaled_features.append((IDX_BIAS, 1.0))
 
-    label = 1 if label_cp > 0 else -1
+    if objective == "sign":
+        label: float = 1.0 if label_cp > 0 else -1.0
+    elif objective == "cp":
+        # Side-to-move oriented centipawns (already oriented in the dataset); keep as a regression target.
+        label = float(label_cp)
+    else:
+        raise ValueError(f"Unknown objective: {objective}")
     return Sample(base=base, features=scaled_features, label=label)
 
 
@@ -262,6 +270,11 @@ def train(samples: List[Sample], args):
     batch_size = args.batch_size
     l2 = args.l2
     scale = args.logistic_scale
+    objective = args.objective
+    if objective == "cp":
+        scale = float(args.mse_scale)
+        if scale <= 0:
+            raise ValueError("--mse-scale must be > 0 for objective=cp")
 
     for epoch in range(args.epochs):
         random.shuffle(samples)
@@ -273,18 +286,30 @@ def train(samples: List[Sample], args):
                 pred = s.base
                 for idx, val in s.features:
                     pred += w[idx] * val
-                y = s.label
-                z = -y * pred / scale
-                # loss = log(1 + exp(z))
-                if z > 50:
-                    loss = z  # avoid overflow
+                if objective == "sign":
+                    y = s.label
+                    z = -y * pred / scale
+                    # loss = log(1 + exp(z))
+                    if z > 50:
+                        loss = z  # avoid overflow
+                    else:
+                        loss = math.log1p(math.exp(z))
+                    total_loss += loss
+                    sig = sigmoid(z)
+                    g_factor = -y * sig / scale
+                    for idx, val in s.features:
+                        grad[idx] += g_factor * val
+                elif objective == "cp":
+                    # Squared error on centipawns, normalized by mse_scale to keep gradients stable.
+                    # loss = 0.5 * ((pred - y)/mse_scale)^2
+                    y = s.label
+                    err = (pred - y) / scale
+                    total_loss += 0.5 * err * err
+                    g_factor = err / scale  # d(loss)/d(pred)
+                    for idx, val in s.features:
+                        grad[idx] += g_factor * val
                 else:
-                    loss = math.log1p(math.exp(z))
-                total_loss += loss
-                sig = sigmoid(z)
-                g_factor = -y * sig / scale
-                for idx, val in s.features:
-                    grad[idx] += g_factor * val
+                    raise ValueError(f"Unknown objective: {objective}")
             inv_bs = 1.0 / max(1, len(batch))
             for i in range(NUM_FEATURES):
                 grad[i] = grad[i] * inv_bs + l2 * w[i]
@@ -305,8 +330,25 @@ def predict_sign(sample: Sample, w) -> int:
 def accuracy(samples: List[Sample], w) -> float:
     if not samples:
         return 0.0
-    correct = sum(1 for s in samples if predict_sign(s, w) == s.label)
+    correct = 0
+    for s in samples:
+        true_sign = 1 if s.label >= 0 else -1
+        if predict_sign(s, w) == true_sign:
+            correct += 1
     return correct / len(samples)
+
+
+def rmse(samples: List[Sample], w) -> float:
+    if not samples:
+        return 0.0
+    se = 0.0
+    for s in samples:
+        pred = s.base
+        for idx, val in s.features:
+            pred += w[idx] * val
+        err = pred - s.label
+        se += err * err
+    return math.sqrt(se / len(samples))
 
 
 # ---------------------------------------------------------------------------
@@ -408,12 +450,16 @@ def parse_args():
     p.add_argument("--lr", type=float, default=0.05, help="Learning rate.")
     p.add_argument("--l2", type=float, default=1e-4, help="L2 weight decay.")
     p.add_argument("--logistic-scale", type=float, default=400.0, help="Scale for Texel logistic loss.")
+    p.add_argument("--mse-scale", type=float, default=50.0, help="Normalization for cp MSE (objective=cp).")
     p.add_argument("--pst-clamp", type=float, default=200.0, help="Clamp for PST weights.")
     p.add_argument("--small-clamp", type=float, default=50.0, help="Clamp for bishop pair/tempo/etc.")
+    p.add_argument("--objective", choices=("sign", "cp"), default="cp", help="Training objective: sign-classification or cp-regression.")
+    p.add_argument("--require-deep", action="store_true", help="Only use eval_deep_cp; skip rows without deep labels.")
+    p.add_argument("--label-clamp", type=int, default=2000, help="Clamp labels to +/-N centipawns (0 disables).")
     return p.parse_args()
 
 
-def load_samples(path: str, max_samples: int) -> List[Sample]:
+def load_samples(path: str, max_samples: int, objective: str, require_deep: bool, label_clamp: int) -> List[Sample]:
     samples: List[Sample] = []
     bad_rows = 0
     with open_maybe_gzip(path, "rt") as fh:
@@ -423,7 +469,7 @@ def load_samples(path: str, max_samples: int) -> List[Sample]:
             if not fen:
                 bad_rows += 1
                 continue
-            score_str = row.get("eval_deep_cp") or row.get("eval_cp")
+            score_str = row.get("eval_deep_cp") if require_deep else (row.get("eval_deep_cp") or row.get("eval_cp"))
             if score_str is None:
                 bad_rows += 1
                 continue
@@ -432,7 +478,7 @@ def load_samples(path: str, max_samples: int) -> List[Sample]:
             except (TypeError, ValueError):
                 bad_rows += 1
                 continue
-            s = build_sample(fen, score)
+            s = build_sample(fen, score, objective=objective, label_clamp=label_clamp)
             if s is None:
                 continue
             samples.append(s)
@@ -446,7 +492,7 @@ def load_samples(path: str, max_samples: int) -> List[Sample]:
 def main():
     args = parse_args()
     random.seed(args.seed)
-    samples = load_samples(args.input, args.max_samples)
+    samples = load_samples(args.input, args.max_samples, args.objective, args.require_deep, args.label_clamp)
     if not samples:
         print("No samples loaded; aborting.")
         return
@@ -460,7 +506,12 @@ def main():
     w = train(train_samples, args)
     train_acc = accuracy(train_samples, w)
     val_acc = accuracy(val_samples, w)
-    print(f"Texel sign accuracy: train={train_acc*100:.2f}% val={val_acc*100:.2f}%")
+    if args.objective == "cp":
+        train_rmse = rmse(train_samples, w)
+        val_rmse = rmse(val_samples, w)
+        print(f"RMSE(cp): train={train_rmse:.1f} val={val_rmse:.1f} | sign_acc: train={train_acc*100:.2f}% val={val_acc*100:.2f}%")
+    else:
+        print(f"Texel sign accuracy: train={train_acc*100:.2f}% val={val_acc*100:.2f}%")
 
     emit_header(w, args.output_header, args.pst_clamp, args.small_clamp)
 
