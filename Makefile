@@ -47,6 +47,13 @@ endif
 SRC_DIR   = src
 BUILD_DIR = build
 TARGET    = program$(EXE_EXT)
+PYTHON ?= python3
+SELFPLAY_GAMES ?= build/selfplay_games.jsonl
+OPENING_BOOK_MAP ?= build/opening_book_map.json
+OPENING_BOOK_STATS ?= build/opening_book_stats.jsonl
+SELFPLAY_GAMES_OPTS ?= --engine-cmd ./$(TARGET) --games 100 --max-plies 80 --move-time-ms 150 --depth 6 --output $(SELFPLAY_GAMES)
+OPENING_BOOK_OPTS ?= --input $(SELFPLAY_GAMES) --output-map $(OPENING_BOOK_MAP) --output-details $(OPENING_BOOK_STATS) --engine-cmd ./$(TARGET) --max-ply 8 --min-samples 6 --top-n 2
+SKIP_POST_BUILD ?= 0
 
 # ============================================================
 # Source discovery and object / dep mapping
@@ -72,6 +79,12 @@ all: $(TARGET)
 
 $(TARGET): $(OBJS)
 	$(CXX) $(OBJS) -o $@
+ifeq ($(SKIP_POST_BUILD),0)
+	@echo "Generating forced-capture self-play games and opening book..."
+	@mkdir -p $(dir $(SELFPLAY_GAMES)) $(dir $(OPENING_BOOK_MAP)) $(dir $(OPENING_BOOK_STATS))
+	$(PYTHON) scripts/self_play_games.py $(SELFPLAY_GAMES_OPTS)
+	$(PYTHON) scripts/opening_book_miner.py $(OPENING_BOOK_OPTS)
+endif
 
 # ============================================================
 # Compile step (ensures directory for each .o exists)

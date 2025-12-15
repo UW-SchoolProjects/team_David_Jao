@@ -26,6 +26,8 @@ This repo hosts the `Team_David_Jao` chess engine plus helper scripts for Epic 5
    ```
    This emits `./program`, a CECP-compatible binary that automatically registers the `david_*` helpers.
 
+By default `make` now invokes `scripts/self_play_games.py` and `scripts/opening_book_miner.py` after linking so `build/selfplay_games.jsonl`, `build/opening_book_map.json`, and the accompanying stats/logs are regenerated whenever the binary changes. Override `PYTHON`/`SELFPLAY_GAMES`/`OPENING_BOOK_MAP` etc. if you need different paths or tuning parameters, or set `SKIP_POST_BUILD=1` to skip the post-build pipeline during quick iterations.
+
 ### Running with XBoard
 1. (Optional) enable verbose instrumentation by rebuilding with logging:
    ```bash
@@ -89,6 +91,22 @@ python3 scripts/self_play_games.py \
 ```
 
 Set `--gzip` if you want compressed output; the JSON lines already include `ply_data` entries with zobrist keys so the miner can avoid replaying moves when possible.
+
+### Opening Book (required)
+`src/interface/cecp.cpp:212-276` loads `build/opening_book_map.json` (configurable via `ENGINE_BOOK_PATH`) and the engine refuses to start without it. To keep that book in sync with a new build, feed the NDJSON into `scripts/opening_book_miner.py` so it can recompute the map and stats:
+
+```bash
+python3 scripts/opening_book_miner.py \
+  --input build/selfplay_games.jsonl \
+  --output-map build/opening_book_map.json \
+  --output-details build/opening_book_stats.jsonl \
+  --engine-cmd ./program \
+  --max-ply 8 \
+  --min-samples 6 \
+  --top-n 2
+```
+
+The miner also logs invalid games to `build/opening_miner_fail.log` and writes the raw stats JSONL so you can inspect the move distributions. Because both the NDJSON games and the derived map can be large and change whenever the engine is rebuilt, we intentionally do not commit these generated artifacts; rerun the two scripts whenever you need fresh opening coverage instead of checking the outputs into git.
 
 ## Additional Scripts
 - `scripts/blitz_gauntlet.sh`: run 1+0 gauntlet matches between engine builds (uses the bundled `cutechess-cli` wrapper if present).
