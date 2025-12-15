@@ -13,9 +13,28 @@ import os
 import select
 import shlex
 import subprocess
+import threading
 import time
 from collections import deque
+from queue import Queue
 from typing import Dict, Iterable, Optional, Tuple
+
+
+class FailLogger:
+    def __init__(self, path: str):
+        self._lock = threading.Lock()
+        self._fh = open(path, "w", encoding="utf-8")
+
+    def write(self, msg: str) -> None:
+        with self._lock:
+            self._fh.write(msg)
+            if not msg.endswith("\n"):
+                self._fh.write("\n")
+            self._fh.flush()
+
+    def close(self) -> None:
+        with self._lock:
+            self._fh.close()
 
 
 def send(proc: subprocess.Popen, cmd: str) -> bool:
@@ -135,7 +154,7 @@ def start_engine(cmd: str, extra_env: Optional[dict] = None) -> subprocess.Popen
     return proc
 
 
-def handshake(proc: subprocess.Popen, args) -> bool:
+def handshake(proc: subprocess.Popen, args, fail_logger: Optional[FailLogger] = None) -> bool:
     if not send(proc, "xboard"):
         return False
     if not send(proc, "protover 2"):
@@ -143,13 +162,19 @@ def handshake(proc: subprocess.Popen, args) -> bool:
     done = False
     deadline = time.time() + 2.0
     while time.time() < deadline:
-        line = read_until(proc, timeout=max(0.0, deadline - time.time()), predicate=lambda l: l.startswith("feature") or l.startswith("done"))
+        line = read_until(
+            proc,
+            timeout=max(0.0, deadline - time.time()),
+            predicate=lambda l: l.startswith("feature") or l.startswith("done"),
+        )
         if line is None:
             break
         if "done=1" in line or line.strip() == "done=1":
             done = True
             break
     if not done:
+        if fail_logger:
+            fail_logger.write("handshake failed: feature negotiation timeout")
         return False
     if not send(proc, "new"):
         return False
@@ -158,19 +183,17 @@ def handshake(proc: subprocess.Popen, args) -> bool:
     if args.deep_depth > 0:
         send(proc, f"sd {args.deep_depth}")
     if args.deep_time_ms > 0:
-        st_seconds = max(1, int(round(args.deep_time_ms / 1000.0)))
-        send(proc, f"st {st_seconds}")
+        send(proc, f"stms {args.deep_time_ms}")
     send(proc, f"time {args.clock_cs}")
     send(proc, f"otim {args.clock_cs}")
     probe = query_prefix(proc, "david_fen", "fen ", timeout=1.5)
     return probe is not None
 
 
-def restart_engine(args, fail_writer):
+def restart_engine(args, fail_logger: FailLogger):
     proc = start_engine(args.engine_cmd)
-    if not handshake(proc, args):
-        fail_writer.write("handshake failed\n")
-        fail_writer.flush()
+    if not handshake(proc, args, fail_logger):
+        fail_logger.write("handshake failed")
         proc.kill()
         return None
     return proc
@@ -184,7 +207,7 @@ def request_lastscore(proc: subprocess.Popen) -> Optional[int]:
     return parse_score_token(payload)
 
 
-def drain_stderr(proc: subprocess.Popen, fail_writer):
+def drain_stderr(proc: subprocess.Popen, fail_logger: Optional[FailLogger] = None) -> None:
     if not proc.stderr:
         return
     try:
@@ -195,7 +218,8 @@ def drain_stderr(proc: subprocess.Popen, fail_writer):
             line = proc.stderr.readline()
             if not line:
                 break
-            fail_writer.write(f"stderr: {line.strip()}\n")
+            if fail_logger:
+                fail_logger.write(f"stderr: {line.strip()}")
     except Exception:
         pass
 
@@ -215,12 +239,12 @@ def drain_stdout(proc: subprocess.Popen):
         pass
 
 
-def dump_engine_output(proc: subprocess.Popen, fail_writer, header: str):
+def dump_engine_output(proc: subprocess.Popen, fail_logger: FailLogger, header: str) -> None:
     """Reads any buffered stdout/stderr from the engine without blocking (for diagnostics)."""
-    fail_writer.write(f"--- {header} ---\n")
+    fail_logger.write(f"--- {header} ---")
     def drain_stream(stream, label: str):
         if not stream:
-            fail_writer.write(f"   [{label}: closed]\n")
+            fail_logger.write(f"   [{label}: closed]")
             return
         try:
             while True:
@@ -230,26 +254,25 @@ def dump_engine_output(proc: subprocess.Popen, fail_writer, header: str):
                 line = stream.readline()
                 if not line:
                     break
-                fail_writer.write(f"   [{label}] {line.strip()}\n")
+                fail_logger.write(f"   [{label}] {line.strip()}")
         except Exception as e:
-            fail_writer.write(f"   [{label} read error: {e}]\n")
+            fail_logger.write(f"   [{label} read error: {e}]")
 
     drain_stream(proc.stdout, "stdout")
     drain_stream(proc.stderr, "stderr")
-    fail_writer.write("--------------------------------\n")
+    fail_logger.write("--------------------------------")
 
 
-def evaluate_position(proc: subprocess.Popen, fen: str, side: str, args, move_timeout: float, fail_writer) -> Optional[int]:
+def evaluate_position(proc: subprocess.Popen, fen: str, side: str, args, move_timeout: float, fail_logger: FailLogger) -> Optional[int]:
     drain_stdout(proc)
     if not send(proc, f"setboard {fen}"):
-        fail_writer.write(f"FAIL: 'setboard' rejected for FEN: {fen}\n")
+        fail_logger.write(f"FAIL: 'setboard' rejected for FEN: {fen}")
         return None
 
     if args.deep_depth > 0:
         send(proc, f"sd {args.deep_depth}")
     if args.deep_time_ms > 0:
-        st_seconds = max(1, int(round(args.deep_time_ms / 1000.0)))
-        send(proc, f"st {st_seconds}")
+        send(proc, f"stms {args.deep_time_ms}")
     if args.clock_cs > 0:
         send(proc, f"time {args.clock_cs}")
         send(proc, f"otim {args.clock_cs}")
@@ -269,7 +292,7 @@ def evaluate_position(proc: subprocess.Popen, fen: str, side: str, args, move_ti
     stm = side.strip().lower()
     go_cmd = "white" if stm.startswith("w") else "black"
     if not send(proc, go_cmd):
-        fail_writer.write("FAIL: 'go' command rejected.\n")
+        fail_logger.write("FAIL: 'go' command rejected.")
         return None
 
     start_time = time.time()
@@ -284,16 +307,23 @@ def evaluate_position(proc: subprocess.Popen, fen: str, side: str, args, move_ti
     if move_line is None:
         exit_code = proc.poll()
         if exit_code is not None:
-            fail_writer.write(f"CRASH: engine exited (code {exit_code}) after {elapsed:.2f}s on FEN: {fen}\n")
+            fail_logger.write(f"CRASH: engine exited (code {exit_code}) after {elapsed:.2f}s on FEN: {fen}")
         elif elapsed >= move_timeout:
-            fail_writer.write(f"TIMEOUT: >{elapsed:.2f}s (limit {move_timeout}s) on FEN: {fen}\n")
-            dump_engine_output(proc, fail_writer, "Buffered Output at Timeout")
+            fail_logger.write(f"TIMEOUT: >{elapsed:.2f}s (limit {move_timeout}s) on FEN: {fen}")
+            dump_engine_output(proc, fail_logger, "Buffered Output at Timeout")
         else:
-            fail_writer.write(f"ERROR: engine silent/EOF after {elapsed:.2f}s on FEN: {fen}\n")
-            dump_engine_output(proc, fail_writer, "Buffered Output on EOF")
-        send(proc, "?")
-        send(proc, "force")
-        fail_writer.flush()
+            fail_logger.write(f"ERROR: engine silent/EOF after {elapsed:.2f}s on FEN: {fen}")
+            dump_engine_output(proc, fail_logger, "Buffered Output on EOF")
+        # Ensure the next task doesn't reuse a wedged engine process.
+        try:
+            send(proc, "?")
+            send(proc, "force")
+        except Exception:
+            pass
+        try:
+            proc.kill()
+        except Exception:
+            pass
         return None
 
     score = request_lastscore(proc)
@@ -303,11 +333,10 @@ def evaluate_position(proc: subprocess.Popen, fen: str, side: str, args, move_ti
     drain_stdout(proc)
     send(proc, "force")
     if score is None:
-        fail_writer.write(f"MISSING SCORE after move '{move_line}': fen={fen}\n")
+        fail_logger.write(f"MISSING SCORE after move '{move_line}': fen={fen}")
         for l in recent_logs:
-            fail_writer.write(f"  > {l}\n")
-        dump_engine_output(proc, fail_writer, "Debug Output")
-        fail_writer.flush()
+            fail_logger.write(f"  > {l}")
+        dump_engine_output(proc, fail_logger, "Debug Output")
     return score
 
 
@@ -341,7 +370,68 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tanh-scale", type=float, default=400.0, help="Scale for tanh normalization.")
     parser.add_argument("--move-timeout", type=float, default=8.0, help="Seconds to wait for a deep move.")
     parser.add_argument("--fail-log", default="build/deep_label_failures.log", help="Path to write failures.")
+    parser.add_argument("--log-engine-stderr", action="store_true", help="Write engine stderr into the failure log (very verbose).")
+    parser.add_argument("--progress-every", type=int, default=500, help="Print progress every N positions.")
+    parser.add_argument("--limit", type=int, default=0, help="Only process the first N rows (0 = no limit).")
     return parser.parse_args()
+
+
+def worker_loop(worker_id: int, args: argparse.Namespace, rows: list, task_q: Queue, result_q: Queue, fail_logger: FailLogger) -> None:
+    proc = restart_engine(args, fail_logger)
+    if proc is None:
+        fail_logger.write(f"worker {worker_id}: failed to start engine; marking tasks as failed")
+        while True:
+            idx = task_q.get()
+            if idx is None:
+                break
+            result_q.put((idx, None))
+        return
+
+    try:
+        while True:
+            idx = task_q.get()
+            if idx is None:
+                break
+
+            if proc.poll() is not None:
+                proc = restart_engine(args, fail_logger)
+                if proc is None:
+                    fail_logger.write(f"{idx}: engine_restart_failed")
+                    result_q.put((idx, None))
+                    continue
+
+            drain_stderr(proc, fail_logger if args.log_engine_stderr else None)
+
+            row = rows[idx]
+            fen = (row.get("fen") or "").strip()
+            if not fen:
+                fail_logger.write(f"{idx}: missing fen")
+                result_q.put((idx, None))
+                continue
+
+            parts = fen.split()
+            default_side = parts[1] if len(parts) >= 2 else "w"
+            side = row.get("side_to_move") or default_side
+
+            score = evaluate_position(proc, fen, side, args, args.move_timeout, fail_logger)
+            if score is None:
+                result_q.put((idx, None))
+                continue
+
+            row_out = {**row}
+            row_out["eval_deep_cp"] = str(score)
+            row_out["eval_deep_norm"] = f"{normalize(score, args.tanh_scale):.6f}"
+            result_q.put((idx, row_out))
+    finally:
+        try:
+            if proc.poll() is None:
+                send(proc, "quit")
+                proc.wait(timeout=1.0)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
 
 
 def main():
@@ -355,70 +445,83 @@ def main():
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
     os.makedirs(os.path.dirname(os.path.abspath(args.fail_log)), exist_ok=True)
 
-    fail_writer = open(args.fail_log, "w")
-    proc = restart_engine(args, fail_writer)
-    if proc is None:
-        fail_writer.close()
-        return
+    fail_logger = FailLogger(args.fail_log)
 
-    total = 0
-    written = 0
-    with open_reader(args.input) as fh, open_writer(args.output) as out_fh:
+    with open_reader(args.input) as fh:
         reader = csv.DictReader(fh)
         if not reader.fieldnames:
-            fail_writer.write("fatal: input has no header\n")
-            fail_writer.flush()
-            proc.kill()
+            fail_logger.write("fatal: input has no header")
+            fail_logger.close()
             return
+
         base_fields = [f for f in reader.fieldnames if f not in ("eval_deep_cp", "eval_deep_norm")]
         fieldnames = base_fields + ["eval_deep_cp", "eval_deep_norm"]
+
+        rows = list(reader)
+        if args.limit and args.limit > 0:
+            rows = rows[: args.limit]
+
+    total = len(rows)
+    if total == 0:
+        fail_logger.write("fatal: input has no rows")
+        fail_logger.close()
+        return
+
+    args.workers = max(1, int(args.workers))
+    if args.workers > total:
+        args.workers = total
+
+    task_q: Queue = Queue()
+    result_q: Queue = Queue()
+
+    for idx in range(total):
+        task_q.put(idx)
+    for _ in range(args.workers):
+        task_q.put(None)
+
+    threads = []
+    for wid in range(args.workers):
+        t = threading.Thread(target=worker_loop, args=(wid, args, rows, task_q, result_q, fail_logger), daemon=True)
+        t.start()
+        threads.append(t)
+
+    written = 0
+    processed = 0
+    pending = {}
+    next_to_write = 0
+    start = time.time()
+
+    with open_writer(args.output) as out_fh:
         writer = csv.DictWriter(out_fh, fieldnames=fieldnames)
         writer.writeheader()
 
-        for idx, row in enumerate(reader):
-            total += 1
-            if proc.poll() is not None:
-                fail_writer.write(f"{idx}: engine_restart\n")
-                fail_writer.flush()
+        while processed < total:
+            idx, row_out = result_q.get()
+            processed += 1
+            pending[idx] = row_out
+
+            while next_to_write in pending:
+                out_row = pending.pop(next_to_write)
+                if out_row is not None:
+                    writer.writerow(out_row)
+                    written += 1
+                next_to_write += 1
+
+            if args.progress_every > 0 and processed % args.progress_every == 0:
+                elapsed = max(1e-6, time.time() - start)
+                rate = processed / elapsed
+                remaining = total - processed
+                eta_s = remaining / max(1e-6, rate)
+                print(f"{processed}/{total} processed, {written} labeled, {rate:.1f} pos/s, ETA {eta_s/60.0:.1f} min")
                 try:
-                    proc.kill()
+                    out_fh.flush()
                 except Exception:
                     pass
-                proc = restart_engine(args, fail_writer)
-                if proc is None:
-                    break
-            drain_stderr(proc, fail_writer)
-            fen = (row.get("fen") or "").strip()
-            if not fen:
-                fail_writer.write(f"{idx}: missing fen\n")
-                if idx % 100 == 0:
-                    fail_writer.flush()
-                continue
-            parts = fen.split()
-            if len(parts) >= 2:
-                default_side = parts[1]
-            else:
-                default_side = "w"
-            side = row.get("side_to_move") or default_side
-            score = evaluate_position(proc, fen, side, args, args.move_timeout, fail_writer)
-            if score is None:
-                fail_writer.write(f"{idx}: eval_fail\n")
-                if idx % 100 == 0:
-                    fail_writer.flush()
-                continue
-            row_out = {**row}
-            row_out["eval_deep_cp"] = str(score)
-            row_out["eval_deep_norm"] = f"{normalize(score, args.tanh_scale):.6f}"
-            writer.writerow(row_out)
-            written += 1
 
-    send(proc, "quit")
-    try:
-        proc.wait(timeout=1.0)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-    fail_writer.close()
+    for t in threads:
+        t.join()
 
+    fail_logger.close()
     print(f"Deep labeling done. Input rows: {total}, labeled: {written}, output: {args.output}")
 
 

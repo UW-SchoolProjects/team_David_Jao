@@ -333,8 +333,6 @@ static Move search_best_move(EngineSession &sess) {
         constexpr int TERMINAL_MATE_SCORE = -32000;
         sess.last_root_score = stmInCheck ? TERMINAL_MATE_SCORE : 0;
         sess.has_root_score = true;
-        sess.last_move_uci = "0000";
-        sess.last_best_move = Move();
         diag_log(std::string("no root moves; terminal position, in_check=") +
                  (stmInCheck ? "1" : "0") +
                  " score=" + std::to_string(sess.last_root_score) +
