@@ -652,11 +652,15 @@ void init_engine_session(EngineSession &sess) {
     log_msg("Session initialized");
     log_board_fen(sess.board, "Startpos");
 
+    // CECP/XBoard expectation:
+    // - a new game starts at white-to-move
+    // - the engine should play black by default (like a human vs engine game)
+    // - GUI can override by sending "go" (play side-to-move) or "force"/"white"/"black"
     sess.side_to_move = WHITE;
     sess.board.side   = WHITE;
-    sess.engine_side  = WHITE;
+    sess.engine_side  = BLACK;
 
-    sess.mode             = EngineMode::FORCE;
+    sess.mode             = EngineMode::PLAYING;
     sess.quit_requested   = false;
     sess.my_time_ms       = 0;
     sess.opp_time_ms      = 0;
@@ -688,7 +692,7 @@ static void handle_protover(EngineSession&, int version) {
     // Minimal feature set to keep XBoard / cutechess happy.
     std::cout
         << "feature myname=\"" << kEngineName << "\" variants=\"normal\" "
-        << "setboard=1 usermove=1 ping=1 done=1\n";
+        << "setboard=1 usermove=1 ping=1 done=1" << std::endl;
 }
 
 static void handle_new(EngineSession &sess) {
@@ -775,11 +779,10 @@ static void do_engine_move(EngineSession &sess) {
 }
 
 static void handle_go(EngineSession &sess) {
+    // Standard CECP semantics: "go" means "play the side to move".
     sess.mode = EngineMode::PLAYING;
-    // "go" resumes play with the current engine side; move immediately if it's our turn.
-    if (sess.board.side == sess.engine_side) {
-        do_engine_move(sess);
-    }
+    sess.engine_side = sess.board.side;
+    do_engine_move(sess);
 }
 
 static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
@@ -829,7 +832,7 @@ void handle_otim(EngineSession &sess, int cs) {
 
 static void handle_ping(EngineSession &sess, int id) {
     sess.last_ping_id = id;
-    std::cout << "pong " << id << "\n";
+    std::cout << "pong " << id << std::endl;
 }
 
 static void handle_level(EngineSession &sess,
@@ -1037,7 +1040,7 @@ void cecp_main_loop(EngineSession &sess) {
             // Unknown or unsupported command: safe to ignore.
         }
 
-        std::fflush(stdout);
+        std::cout.flush();
         log_msg("ready to take command again");
     }
     log_msg("I should not be seen");

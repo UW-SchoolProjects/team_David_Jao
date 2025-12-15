@@ -109,8 +109,8 @@ struct EngineSession {
     int        side_to_move;   // WHITE or BLACK (same encoding as Board::side)
     EngineMode mode;           // FORCE or PLAYING
 
-    // Which side the engine should play (WHITE or BLACK). Default: WHITE.
-    int engine_side = WHITE;
+    // Which side the engine should play (WHITE or BLACK). Default set by `new`.
+    int engine_side = BLACK;
 
     bool quit_requested = false;
 

@@ -84,8 +84,8 @@ trap cleanup EXIT
 
 RUN_LOG="$(mktemp)"
 cutechess-cli \
-  -engine cmd="$ENGINE_NEW_CMD" proto=xboard \
-  -engine cmd="$ENGINE_OLD_CMD" proto=xboard \
+  -engine cmd="$ENGINE_NEW_CMD" proto=xboard name="engine_new" \
+  -engine cmd="$ENGINE_OLD_CMD" proto=xboard name="engine_old" \
   -each tc=$TC \
   -games $GAMES \
   -concurrency $CONCURRENCY \
