@@ -32,7 +32,7 @@
 
 ### Opening book miner (`opening_book_miner.py`)
 - Purpose: mine forced-capture self-play (NDJSON) for opening W/D/L stats in the first N plies and emit a compact book map.
-- Input format (one JSON per line): `{"moves": ["e2e4", ...], "result": "1-0", "start_fen": "...", "fens": ["<fen-before-ply0>", ...]}`. `fens` is optional; if missing, the script replays plies via python-chess (preferred) or `./program` (force mode).
+- Input format (one JSON per line): `{"moves": ["e2e4", ...], "result": "1-0", "start_fen": "...", "ply_data": [{"move": "...", "fen": "...", "zobrist_key": "0x..."}, ...]}`. The `ply_data` entries may include `zobrist_key` (preferred) plus `fen`/`side`; the miner skips replay and hashing when the key is supplied. Older files can still provide `fens` or rely on engine replay.
 - Recommended invocation:
   ```bash
   python3 scripts/opening_book_miner.py \

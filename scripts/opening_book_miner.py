@@ -28,6 +28,7 @@ import select
 import shlex
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -103,7 +104,12 @@ def parse_fen_basic(fen: str):
             file = 0
             continue
         if ch.isdigit():
-            file += int(ch)
+            span = int(ch)
+            if span < 1 or span > 8:
+                return None
+            file += span
+            if file > 8:
+                return None
             continue
         if ch not in FEN_TO_PIECE or file >= 8 or rank < 0:
             return None
@@ -137,7 +143,7 @@ def parse_fen_basic(fen: str):
             return None
         file_idx = ord(ep[0]) - ord("a")
         rank_idx = int(ep[1]) - 1
-        ep_square = rank_idx * 8 + file_idx
+        ep_square = (rank_idx << 4) | file_idx
 
     return {"board": board_0x88, "side": side, "castling_mask": castling_mask, "ep": ep_square}
 
@@ -243,18 +249,20 @@ class EngineReplayer:
             return False
 
     def _read_until(self, prefix: str) -> Optional[str]:
-        end = self.timeout
-        while end > 0:
-            rlist, _, _ = select.select([self.proc.stdout], [], [], end)
+        deadline = time.time() + self.timeout
+        while True:
+            timeout_left = deadline - time.time()
+            if timeout_left <= 0:
+                break
+            rlist, _, _ = select.select([self.proc.stdout], [], [], timeout_left)
             if not rlist:
-                return None
+                break
             line = self.proc.stdout.readline()
             if not line:
-                return None
+                break
             line = line.strip()
             if line.startswith(prefix):
                 return line
-            end = max(0.0, end - 0.01)
         return None
 
     def _handshake(self):
@@ -282,10 +290,10 @@ class EngineReplayer:
             return None
         return line[len("fen ") :].strip()
 
-    def list_moves(self) -> List[str]:
+    def list_moves(self) -> Optional[List[str]]:
         line = self._query_prefix("david_moves", "moves")
         if line is None:
-            return []
+            return None
         parts = line.split()
         return parts[1:]
 
@@ -300,6 +308,10 @@ class EngineReplayer:
                 raise ReplayError(f"missing FEN before ply {idx}")
             fens.append(fen)
             legal = self.list_moves()
+            if legal is None:
+                raise ReplayError(f"engine timeout listing moves at ply {idx}")
+            if not legal:
+                break  # terminal position reached
             if mv not in legal:
                 raise ReplayError(f"illegal move {mv} at ply {idx}")
             if not self._send(f"usermove {mv}"):
@@ -375,7 +387,7 @@ class MoveStats:
 @dataclass
 class PositionStats:
     key: int
-    fen: str
+    fen: Optional[str]
     moves: Dict[str, MoveStats] = field(default_factory=dict)
 
     def add(self, move: str, outcome: float) -> None:
@@ -384,6 +396,103 @@ class PositionStats:
     @property
     def total(self) -> int:
         return sum(m.total for m in self.moves.values())
+
+
+@dataclass
+class PlyEntry:
+    move: str
+    key: int
+    side: str
+    fen: Optional[str]
+
+
+def parse_side_from_fen(fen: str) -> Optional[str]:
+    parts = fen.strip().split()
+    if len(parts) >= 2:
+        side = parts[1].lower()
+        if side in ("w", "b"):
+            return side
+    return None
+
+
+def parse_key_value(raw) -> Optional[int]:
+    if raw is None:
+        return None
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str):
+        raw = raw.strip()
+        try:
+            return int(raw, 0)
+        except ValueError:
+            return None
+    return None
+
+
+def entries_from_ply_data(
+    ply_data: List[dict], max_plies: int
+) -> Optional[List[PlyEntry]]:
+    entries: List[PlyEntry] = []
+    for idx, ply in enumerate(ply_data):
+        if idx >= max_plies:
+            break
+        if not isinstance(ply, dict):
+            return None
+        move = ply.get("move") or ply.get("uci")
+        if not isinstance(move, str):
+            return None
+        fen = ply.get("fen")
+        side = ply.get("side")
+        if isinstance(side, str):
+            side = side.lower()
+            if side not in ("w", "b"):
+                side = None
+        if side is None and isinstance(fen, str):
+            side = parse_side_from_fen(fen)
+        if side not in ("w", "b"):
+            return None
+        key = parse_key_value(ply.get("zobrist_key") or ply.get("key"))
+        if key is None:
+            if not isinstance(fen, str):
+                return None
+            try:
+                key, _ = zobrist_from_fen(fen)
+            except ValueError:
+                return None
+        entries.append(PlyEntry(move=move, key=key, side=side, fen=fen))
+    if not entries:
+        return None
+    return entries
+
+
+def entries_from_fens_list(
+    fens: List[str], moves: List[str], max_plies: int
+) -> Optional[List[PlyEntry]]:
+    entries: List[PlyEntry] = []
+    for idx, fen in enumerate(fens):
+        if idx >= len(moves) or idx >= max_plies:
+            break
+        if not isinstance(fen, str):
+            return None
+        try:
+            key, side = zobrist_from_fen(fen)
+        except ValueError:
+            return None
+        entries.append(PlyEntry(move=moves[idx], key=key, side=side, fen=fen))
+    if not entries:
+        return None
+    return entries
+
+
+def build_entries_from_replay(fens: List[str], moves: List[str], max_plies: int) -> List[PlyEntry]:
+    entries: List[PlyEntry] = []
+    for idx, fen in enumerate(fens):
+        if idx >= len(moves) or idx >= max_plies:
+            break
+        move = moves[idx]
+        key, side = zobrist_from_fen(fen)
+        entries.append(PlyEntry(move=move, key=key, side=side, fen=fen))
+    return entries
 
 
 def score_move(ms: MoveStats, smoothing: float) -> float:
@@ -395,34 +504,53 @@ def score_move(ms: MoveStats, smoothing: float) -> float:
 def process_game(
     game_obj,
     replayer,
-    max_plies: int,
+    args,
     fail_writer,
-) -> Tuple[List[str], List[str], Optional[float]]:
+) -> Tuple[List[PlyEntry], Optional[float]]:
     moves = game_obj.get("moves") or game_obj.get("uci") or []
     if not isinstance(moves, list) or not moves:
         fail_writer("missing moves")
-        return [], moves, None
+        return [], None
     result = parse_result_to_white_score(game_obj.get("result"))
     if result is None:
         fail_writer("invalid result")
-        return [], moves, None
+        return [], None
     start_fen = game_obj.get("start_fen") or game_obj.get("initial_fen") or DEFAULT_START_FEN
-    fens: List[str] = []
-    if isinstance(game_obj.get("fens"), list) and game_obj["fens"]:
-        fens = game_obj["fens"][: max_plies]
-    else:
+
+    entries: Optional[List[PlyEntry]] = None
+    ply_data = game_obj.get("ply_data")
+    if isinstance(ply_data, list) and ply_data:
+        parsed = entries_from_ply_data(ply_data, args.max_ply)
+        if parsed is not None:
+            entries = parsed
+        else:
+            fail_writer("invalid ply_data; falling back to replay")
+    if entries is None:
+        provided_fens = game_obj.get("fens")
+        if isinstance(provided_fens, list) and provided_fens:
+            parsed_fens = entries_from_fens_list(provided_fens, moves, args.max_ply)
+            if parsed_fens is not None:
+                entries = parsed_fens
+            else:
+                fail_writer("invalid fens list; falling back to replay")
+    if entries is None:
         try:
-            fens = replayer.replay(moves, start_fen=start_fen, max_plies=max_plies)
+            fens = replayer.replay(moves, start_fen=start_fen, max_plies=args.max_ply)
         except ReplayError as exc:
             fail_writer(str(exc))
-            return [], moves, None
-    return fens, moves, result
+            return [], None
+        entries = build_entries_from_replay(fens, moves, args.max_ply)
+    return entries, result
 
 
 def write_json(obj, path: str):
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump(obj, fh, indent=2, sort_keys=True)
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(obj, fh, indent=2, sort_keys=True)
+    except OSError as exc:
+        sys.stderr.write(f"Failed to write JSON to {path}: {exc}\n")
+        sys.exit(1)
 
 
 def main():
@@ -472,37 +600,35 @@ def main():
             except json.JSONDecodeError:
                 log_fail(f"line {line_no}: json decode error")
                 continue
-            fens, moves, white_score = process_game(
+            entries, white_score = process_game(
                 obj,
                 replayer,
-                args.max_ply,
+                args,
                 fail_writer=lambda msg, ln=line_no: log_fail(f"line {ln}: {msg}"),
             )
-            if not fens or white_score is None:
+            if not entries or white_score is None:
                 continue
             games_ok += 1
-            for idx, fen in enumerate(fens):
-                if idx >= len(moves):
-                    break
-                move = moves[idx]
-                try:
-                    key, side = zobrist_from_fen(fen)
-                except ValueError:
-                    log_fail(f"line {line_no}: bad FEN at ply {idx}")
-                    break
+            for idx, entry in enumerate(entries):
+                key = entry.key
+                move = entry.move
+                side = entry.side
+                fen = entry.fen
                 outcome = 0.5
                 if white_score == 1.0:
                     outcome = 1.0 if side == "w" else 0.0
                 elif white_score == 0.0:
                     outcome = 0.0 if side == "w" else 1.0
                 existing = positions.get(key)
-                if existing is not None and existing.fen != fen:
+                if existing is not None and existing.fen and fen and existing.fen != fen:
                     collisions += 1
                     log_fail(f"line {line_no}: zobrist collision, skipping ply {idx}")
                     continue
                 if existing is None:
                     positions[key] = PositionStats(key=key, fen=fen)
                     existing = positions[key]
+                elif existing.fen is None and fen:
+                    existing.fen = fen
                 existing.add(move, outcome)
                 ply_records += 1
 
@@ -536,7 +662,7 @@ def main():
             book_map[f"{key:016x}"] = top_moves[0][2]
             entry = {
                 "key_hex": f"{key:016x}",
-                "fen": pos.fen,
+                "fen": pos.fen or "",
                 "total": pos.total,
                 "moves": [
                     {
