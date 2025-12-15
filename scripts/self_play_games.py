@@ -167,7 +167,7 @@ def start_engine(cmd: str) -> subprocess.Popen:
         text=True,
         encoding="utf-8",
         errors="replace",
-        bufsize=0,
+        bufsize=1,  # line-buffered to cooperate with readline/select
     )
     return proc
 
@@ -206,18 +206,25 @@ def request_fen(proc: subprocess.Popen) -> Optional[str]:
     line = query_prefix(proc, "david_fen", "fen ", timeout=1.0)
     if line is None:
         return None
-    return line[len("fen "):].strip()
+    fen = line[len("fen "):].strip()
+    return fen if fen else None
 
 def engine_best_move(proc: subprocess.Popen, side: str, move_timeout: float) -> Optional[str]:
+    if proc.poll() is not None:
+        return None
     go_cmd = "white" if side == "w" else "black"
-    send(proc, go_cmd)
+    if not send(proc, go_cmd):
+        return None
     line = read_until(proc, move_timeout, lambda l: l.startswith("move ") or l in ("1-0", "0-1", "1/2-1/2"))
     if line is None:
         return None
     if line in ("1-0", "0-1", "1/2-1/2"):
         return line  # terminal result surfaced by engine
     parts = line.split()
-    return parts[1] if len(parts) >= 2 else None
+    if len(parts) < 2:
+        return None
+    mv = parts[1].strip()
+    return mv if mv else None
 
 # --- Main loop ---
 
@@ -234,13 +241,15 @@ def play_game(proc: subprocess.Popen, game_id: int, max_plies: int, move_timeout
             return None
         legal = list_moves(proc)
         if not legal:
-            # terminal
+            # terminal: capture final position
+            ply_data.append({"fen": fen, "zobrist_key": f"{key:016x}", "move": ""})
             break
         side = fen.split()[1] if len(fen.split()) > 1 else "w"
         mv = engine_best_move(proc, side, move_timeout)
         if mv is None:
             return None
         if mv in ("1-0", "0-1", "1/2-1/2"):
+            ply_data.append({"fen": fen, "zobrist_key": f"{key:016x}", "move": ""})
             result = mv
             return {"moves": moves, "result": result, "start_fen": start_fen, "ply_data": ply_data, "game_id": game_id}
         moves.append(mv)

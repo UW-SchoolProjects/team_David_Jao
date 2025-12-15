@@ -326,33 +326,39 @@ static const std::string BOOK_PATH = resolve_book_path();
 static OpeningBook g_book;
 
 static bool book_move_for_root(EngineSession &sess, const MoveList &rootMoves, Move &out) {
-    if (!g_book.loaded) {
-        {
-            std::ifstream in_sz(BOOK_PATH, std::ios::binary | std::ios::ate);
-            if (in_sz) {
-                std::streamsize sz = in_sz.tellg();
-                const std::streamsize kMaxSize = static_cast<std::streamsize>(64) * 1024 * 1024;
-                if (sz > kMaxSize) {
-                    diag_log("opening_book: file too large, refusing to load (" + std::to_string(static_cast<long long>(sz)) + " bytes)");
+    static bool init_attempted = false;
+    static bool book_enabled = false;
+    if (!init_attempted) {
+        init_attempted = true;
+        std::ifstream in_sz(BOOK_PATH, std::ios::binary | std::ios::ate);
+        if (in_sz) {
+            std::streamsize sz = in_sz.tellg();
+            const std::streamsize kMaxSize = static_cast<std::streamsize>(64) * 1024 * 1024;
+            if (sz > kMaxSize) {
+                diag_log("opening_book: file too large, refusing to load (" + std::to_string(static_cast<long long>(sz)) + " bytes)");
+                g_book.loaded = true;
+                book_enabled = false;
+            } else if (sz > 0) {
+                book_enabled = g_book.load_from_file(BOOK_PATH) && !g_book.entries.empty();
+                if (!book_enabled) {
+                    diag_log("opening_book: disabled (empty or malformed): " + BOOK_PATH);
                     g_book.loaded = true;
                 }
             }
-        }
-        if (!g_book.loaded) {
-            g_book.load_from_file(BOOK_PATH);
+        } else {
+            diag_log("opening_book: not found, disabled: " + BOOK_PATH);
+            g_book.loaded = true;
+            book_enabled = false;
         }
     }
+    if (!book_enabled) return false;
     std::string uci;
     if (!g_book.lookup(sess.board.zobrist_key, uci)) {
         return false;
     }
     Move parsed;
-    if (!parse_uci_move(sess.board, uci, parsed)) {
-        diag_log("opening_book: book move illegal in position key=" + format_key_hex(sess.board.zobrist_key) + " uci=" + uci);
-        return false;
-    }
-    if (parsed.isNull()) {
-        diag_log("opening_book: null move rejected for key=" + format_key_hex(sess.board.zobrist_key));
+    if (!parse_uci_move(sess.board, uci, parsed) || parsed.isNull()) {
+        diag_log("opening_book: book move illegal key=" + format_key_hex(sess.board.zobrist_key) + " uci=" + uci);
         return false;
     }
     bool found_in_root = false;
@@ -363,7 +369,11 @@ static bool book_move_for_root(EngineSession &sess, const MoveList &rootMoves, M
         }
     }
     if (!found_in_root) {
-        diag_log("opening_book: parsed move not in root move list key=" + format_key_hex(sess.board.zobrist_key) + " uci=" + uci);
+        diag_log("opening_book: parsed move not in root list key=" + format_key_hex(sess.board.zobrist_key) + " uci=" + uci);
+        return false;
+    }
+    if (move_to_uci(parsed) != uci) {
+        diag_log("opening_book: UCI mismatch after parse key=" + format_key_hex(sess.board.zobrist_key) + " got=" + move_to_uci(parsed) + " want=" + uci);
         return false;
     }
     out = parsed;
