@@ -23,8 +23,9 @@ import gzip
 import math
 import os
 import random
+import copy
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # Constants (mirrors C++ eval.cpp conventions)
@@ -143,6 +144,14 @@ def parse_fen(fen: str):
     return squares, side
 
 
+def normalize_fen_key(fen: str) -> Optional[str]:
+    """Normalize a FEN for dedup/splitting: keep only placement, stm, castling, ep."""
+    parts = fen.strip().split()
+    if len(parts) < 4:
+        return None
+    return " ".join(parts[:4])
+
+
 # ---------------------------------------------------------------------------
 # Data container
 # ---------------------------------------------------------------------------
@@ -152,6 +161,8 @@ class Sample:
     base: float
     features: List[Tuple[int, float]]
     label: float  # objective-dependent (e.g., cp or +/-1)
+    game_id: Optional[str] = None
+    fen_key: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -438,6 +449,76 @@ def rmse(samples: List[Sample], w) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Splitting / loading helpers
+# ---------------------------------------------------------------------------
+
+def split_train_val(samples: List[Sample], holdout: float, seed: int, split_by: str):
+    if not samples:
+        return [], []
+
+    h = max(0.0, min(0.95, float(holdout)))
+    rng = random.Random(seed)
+
+    if split_by == "row":
+        shuffled = list(samples)
+        rng.shuffle(shuffled)
+        split = int(len(shuffled) * (1.0 - h))
+        return shuffled[:split], shuffled[split:]
+
+    if split_by != "game":
+        raise ValueError(f"Unknown split_by: {split_by}")
+
+    # Group by game_id to prevent leakage between train/val from the same self-play game.
+    groups: Dict[str, List[Sample]] = {}
+    for i, s in enumerate(samples):
+        gid = (s.game_id or "").strip()
+        if not gid:
+            gid = f"__row_{i}"
+        groups.setdefault(gid, []).append(s)
+
+    game_ids = list(groups.keys())
+    rng.shuffle(game_ids)
+
+    target_val = int(round(len(samples) * h))
+    val: List[Sample] = []
+    train: List[Sample] = []
+    val_count = 0
+    for gid in game_ids:
+        bucket = groups[gid]
+        if val_count < target_val:
+            val.extend(bucket)
+            val_count += len(bucket)
+        else:
+            train.extend(bucket)
+
+    # Guard against pathological cases (e.g., 1 game).
+    if not train and val:
+        train, val = val, train
+    if not val and train:
+        # Keep at least one sample in val if possible.
+        val.append(train.pop())
+    return train, val
+
+
+def parse_l2_grid(spec: str) -> List[float]:
+    vals: List[float] = []
+    for tok in (spec or "").split(","):
+        t = tok.strip()
+        if not t:
+            continue
+        try:
+            v = float(t)
+        except ValueError as e:
+            raise ValueError(f"Invalid --l2-grid entry: {t!r}") from e
+        if v < 0:
+            raise ValueError(f"--l2-grid entries must be >= 0, got {v}")
+        vals.append(v)
+    if not vals:
+        raise ValueError("--l2-grid parsed to an empty list")
+    return vals
+
+
+# ---------------------------------------------------------------------------
 # Header emission
 # ---------------------------------------------------------------------------
 
@@ -546,6 +627,12 @@ def parse_args():
     p.add_argument("--input", default="build/deep_labeled_positions.csv.gz", help="Input CSV (.gz ok) from deep_labeler.")
     p.add_argument("--output-header", default="src/core/gameTreeSearch/weights_evaluated.h", help="Header path to write tuned weights.")
     p.add_argument("--holdout", type=float, default=0.2, help="Fraction of data for validation.")
+    p.add_argument(
+        "--split-by",
+        choices=("row", "game"),
+        default="row",
+        help="Train/val split strategy: row (random rows) or game (group by game_id).",
+    )
     p.add_argument("--max-samples", type=int, default=0, help="Limit number of samples (0 = all).")
     p.add_argument("--seed", type=int, default=13, help="RNG seed.")
     p.add_argument("--epochs", type=int, default=8, help="Training epochs.")
@@ -558,6 +645,11 @@ def parse_args():
     p.add_argument("--batch-size", type=int, default=128, help="Batch size for training.")
     p.add_argument("--lr", type=float, default=0.01, help="Learning rate.")
     p.add_argument("--l2", type=float, default=1e-4, help="L2 weight decay.")
+    p.add_argument(
+        "--l2-grid",
+        default="",
+        help="Comma-separated l2 values to try (ridge + objective=cp only); best val RMSE is selected.",
+    )
     p.add_argument("--logistic-scale", type=float, default=400.0, help="Scale for Texel logistic loss.")
     p.add_argument("--mse-scale", type=float, default=50.0, help="Normalization for cp MSE (objective=cp).")
     p.add_argument("--pst-clamp", type=float, default=200.0, help="Clamp for PST weights.")
@@ -567,19 +659,37 @@ def parse_args():
     p.add_argument("--objective", choices=("sign", "cp"), default="cp", help="Training objective: sign-classification or cp-regression.")
     p.add_argument("--require-deep", action="store_true", help="Only use eval_deep_cp; skip rows without deep labels.")
     p.add_argument("--label-clamp", type=int, default=2000, help="Clamp labels to +/-N centipawns (0 disables).")
+    p.add_argument(
+        "--dedup",
+        choices=("none", "first", "mean"),
+        default="none",
+        help="Deduplicate by normalized FEN (first 4 fields). 'mean' averages labels per unique FEN.",
+    )
     return p.parse_args()
 
 
-def load_samples(path: str, max_samples: int, objective: str, require_deep: bool, label_clamp: int) -> List[Sample]:
+def load_samples(path: str, max_samples: int, objective: str, require_deep: bool, label_clamp: int, dedup: str) -> List[Sample]:
     samples: List[Sample] = []
     bad_rows = 0
+    dup_rows = 0
+
+    if dedup not in ("none", "first", "mean"):
+        raise ValueError(f"Unknown dedup mode: {dedup}")
+
+    agg: Dict[str, Tuple[str, int, int, str]] = {}
+    seen = set()
     with open_maybe_gzip(path, "rt") as fh:
         reader = csv.DictReader(fh)
-        for row in reader:
+        for row_idx, row in enumerate(reader):
             fen = (row.get("fen") or "").strip()
             if not fen:
                 bad_rows += 1
                 continue
+            fen_key = normalize_fen_key(fen)
+            if fen_key is None:
+                bad_rows += 1
+                continue
+
             score_str = row.get("eval_deep_cp") if require_deep else (row.get("eval_deep_cp") or row.get("eval_cp"))
             if score_str is None:
                 bad_rows += 1
@@ -589,14 +699,61 @@ def load_samples(path: str, max_samples: int, objective: str, require_deep: bool
             except (TypeError, ValueError):
                 bad_rows += 1
                 continue
-            s = build_sample(fen, score, objective=objective, label_clamp=label_clamp)
+
+            gid = (row.get("game_id") or "").strip()
+
+            if dedup == "none":
+                s = build_sample(fen, score, objective=objective, label_clamp=label_clamp)
+                if s is None:
+                    continue
+                s.game_id = gid or None
+                s.fen_key = fen_key
+                samples.append(s)
+                if max_samples and len(samples) >= max_samples:
+                    break
+                continue
+
+            if dedup == "first":
+                if fen_key in seen:
+                    dup_rows += 1
+                    continue
+                seen.add(fen_key)
+                s = build_sample(fen, score, objective=objective, label_clamp=label_clamp)
+                if s is None:
+                    continue
+                s.game_id = gid or None
+                s.fen_key = fen_key
+                samples.append(s)
+                if max_samples and len(samples) >= max_samples:
+                    break
+                continue
+
+            # dedup == "mean": keep up to max_samples unique keys but aggregate across the whole file
+            if fen_key in agg:
+                fen0, sum_score, count, gid0 = agg[fen_key]
+                agg[fen_key] = (fen0, sum_score + score, count + 1, gid0)
+                continue
+            if max_samples and len(agg) >= max_samples:
+                dup_rows += 1
+                continue
+            agg[fen_key] = (fen, score, 1, gid)
+
+    if dedup == "mean":
+        for fen_key, (fen, sum_score, count, gid) in agg.items():
+            mean_score = int(round(sum_score / max(1, count)))
+            s = build_sample(fen, mean_score, objective=objective, label_clamp=label_clamp)
             if s is None:
                 continue
+            s.game_id = gid.strip() or None
+            s.fen_key = fen_key
             samples.append(s)
-            if max_samples and len(samples) >= max_samples:
-                break
+
     if bad_rows:
         print(f"Skipped {bad_rows} rows due to missing/invalid fen or score.")
+    if dedup != "none":
+        if dup_rows:
+            print(f"Dedup ({dedup}): skipped {dup_rows} duplicate/extra rows.")
+        print(f"Dedup ({dedup}): kept {len(samples)} unique positions.")
     return samples
 
 
@@ -605,17 +762,24 @@ def main():
     if args.optimizer is None:
         args.optimizer = "ridge" if args.objective == "cp" else "adam"
     random.seed(args.seed)
-    samples = load_samples(args.input, args.max_samples, args.objective, args.require_deep, args.label_clamp)
+    samples = load_samples(args.input, args.max_samples, args.objective, args.require_deep, args.label_clamp, args.dedup)
     if not samples:
         print("No samples loaded; aborting.")
         return
 
-    random.shuffle(samples)
-    split = int(len(samples) * (1.0 - args.holdout))
-    train_samples = samples[:split]
-    val_samples = samples[split:]
+    train_samples, val_samples = split_train_val(samples, args.holdout, args.seed, args.split_by)
+    if not train_samples or not val_samples:
+        print("Train/val split failed (need at least 1 sample in each); aborting.")
+        return
 
-    print(f"Loaded {len(samples)} samples (train {len(train_samples)}, val {len(val_samples)}).")
+    unique_games = {s.game_id for s in samples if (s.game_id or "").strip()}
+    unique_fens = {s.fen_key for s in samples if s.fen_key}
+    if unique_games:
+        print(f"Loaded {len(samples)} samples (games {len(unique_games)}, unique_fen {len(unique_fens)}).")
+    else:
+        print(f"Loaded {len(samples)} samples (unique_fen {len(unique_fens)}).")
+    print(f"Split ({args.split_by}): train {len(train_samples)}, val {len(val_samples)}.")
+
     w0 = [0.0] * NUM_FEATURES
     base_train_acc = accuracy(train_samples, w0)
     base_val_acc = accuracy(val_samples, w0)
@@ -629,7 +793,32 @@ def main():
     else:
         print(f"Baseline sign accuracy: train={base_train_acc*100:.2f}% val={base_val_acc*100:.2f}%")
 
-    w = train(train_samples, args)
+    w = None
+    if args.objective == "cp" and args.optimizer == "ridge" and args.l2_grid.strip():
+        grid = parse_l2_grid(args.l2_grid)
+        best = None
+        best_l2 = None
+        best_val_rmse = None
+        print(f"Ridge sweep over {len(grid)} l2 values...")
+        for l2 in grid:
+            args2 = copy.copy(args)
+            args2.l2 = l2
+            w_try = train_ridge(train_samples, args2)
+            val_rmse = rmse(val_samples, w_try)
+            train_rmse = rmse(train_samples, w_try)
+            val_acc = accuracy(val_samples, w_try)
+            print(f"  l2={l2:g}: rmse train={train_rmse:.1f} val={val_rmse:.1f} | sign_acc val={val_acc*100:.2f}%")
+            if best_val_rmse is None or val_rmse < best_val_rmse:
+                best = w_try
+                best_l2 = l2
+                best_val_rmse = val_rmse
+        assert best is not None and best_l2 is not None
+        args.l2 = float(best_l2)
+        w = best
+        print(f"Selected l2={args.l2:g} (val RMSE {best_val_rmse:.1f}).")
+    else:
+        w = train(train_samples, args)
+
     train_acc = accuracy(train_samples, w)
     val_acc = accuracy(val_samples, w)
     if args.objective == "cp":
