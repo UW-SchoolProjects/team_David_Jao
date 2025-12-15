@@ -393,6 +393,7 @@ def worker_loop(worker_id: int, args: argparse.Namespace, task_q: Queue, result_
         while True:
             task = task_q.get()
             if task is None:
+                task_q.put(None)  # propagate shutdown
                 break
             idx, row = task
 
@@ -455,7 +456,7 @@ def main():
     # Kick off workers
     threads = []
     for wid in range(args.workers):
-        t = threading.Thread(target=worker_loop, args=(wid, args, task_q, result_q, fail_logger), daemon=True)
+        t = threading.Thread(target=worker_loop, args=(wid, args, task_q, result_q, fail_logger), daemon=False)
         t.start()
         threads.append(t)
 
@@ -465,6 +466,10 @@ def main():
         if not reader.fieldnames:
             fail_logger.write("fatal: input has no header")
             fail_logger.close()
+            for _ in range(args.workers):
+                task_q.put(None)
+            for t in threads:
+                t.join()
             return
 
         base_fields = [f for f in reader.fieldnames if f not in ("eval_deep_cp", "eval_deep_norm")]
@@ -480,6 +485,10 @@ def main():
     if total == 0:
         fail_logger.write("fatal: input has no rows")
         fail_logger.close()
+        for _ in range(args.workers):
+            task_q.put(None)
+        for t in threads:
+            t.join()
         return
 
     # Signal shutdown
