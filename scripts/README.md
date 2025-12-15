@@ -46,5 +46,19 @@
   ```
 - Output: compact map JSON (`hex_key -> best UCI`) plus detailed JSONL with top moves and W/D/L counts; failures logged to `build/opening_miner_fail.log`.
 
+### Self-play games (`self_play_games.py`)
+- Purpose: generate NDJSON self-play games (forced-capture) suitable as input to `opening_book_miner.py`.
+- Recommended invocation:
+  ```bash
+  python3 scripts/self_play_games.py \
+    --engine-cmd ./program \
+    --games 100 \
+    --max-plies 80 \
+    --move-time-ms 150 \
+    --depth 6 \
+    --output build/selfplay_games.jsonl
+  ```
+- Output: NDJSON with fields `moves`, `result`, `start_fen`, and `ply_data` entries including `fen`, `move`, `zobrist_key`.
+
 ### Blitz gauntlet (`blitz_gauntlet.sh`)
 - Stresses new builds vs a reference at 1+0 (see inline comments).

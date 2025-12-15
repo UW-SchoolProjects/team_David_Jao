@@ -269,6 +269,7 @@ class EngineReplayer:
         if not self._send("xboard"):
             raise ReplayError("failed to start engine (xboard send)")
         self._send("protover 2")
+        self._send("new")
         self._send("force")
         probe = self._query_prefix("david_fen", "fen ")
         if probe is None:

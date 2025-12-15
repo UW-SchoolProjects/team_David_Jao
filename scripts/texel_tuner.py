@@ -11,7 +11,8 @@ Takes the deep-labeled CSV from Task 5.2.2 and fits:
 Outputs a C++ header with constexpr tables/constants ready to drop into eval.cpp.
 
 Notes:
-- Uses sign(labels) as targets (cp from side-to-move POV). Zero/blank labels are skipped.
+- Supports two objectives: `sign` (Texel logistic) and `cp` (centipawn regression).
+- For `sign`, zero/blank labels are skipped (ambiguous target).
 - Handles positions even if there are no legal moves (purely parses FEN, no move gen).
 - Clamps PST weights to +/-200, small terms to +/-50 before emission.
 """
@@ -161,7 +162,7 @@ def build_sample(fen: str, label_cp: int, objective: str, label_clamp: int) -> O
     squares, side = parse_fen(fen)
     if squares is None or side not in ("w", "b"):
         return None
-    if label_cp == 0:
+    if objective == "sign" and label_cp == 0:
         return None
     if label_clamp > 0:
         label_cp = max(-label_clamp, min(label_clamp, label_cp))
@@ -237,7 +238,9 @@ def build_sample(fen: str, label_cp: int, objective: str, label_clamp: int) -> O
         dist = manhattan(king_sq["w"], king_sq["b"])
         prox = max(0, 10 - dist)
         if prox > 0:
-            scaled_features.append((IDX_KING_PROX, prox * eg_wt))
+            # This term is applied in White POV then converted to side-to-move POV,
+            # so it must be oriented by stm_sign here.
+            scaled_features.append((IDX_KING_PROX, prox * eg_wt * stm_sign))
 
     # Bias term
     scaled_features.append((IDX_BIAS, 1.0))
@@ -265,16 +268,33 @@ def sigmoid(x: float) -> float:
 
 
 def train(samples: List[Sample], args):
+    objective = args.objective
+    optimizer = getattr(args, "optimizer", "sgd")
+    if objective == "cp" and optimizer == "ridge":
+        return train_ridge(samples, args)
+
     w = [0.0] * NUM_FEATURES
     lr = args.lr
     batch_size = args.batch_size
     l2 = args.l2
     scale = args.logistic_scale
-    objective = args.objective
     if objective == "cp":
         scale = float(args.mse_scale)
         if scale <= 0:
             raise ValueError("--mse-scale must be > 0 for objective=cp")
+
+    if optimizer not in ("sgd", "adam"):
+        raise ValueError(f"Unknown optimizer: {optimizer}")
+
+    m = None
+    v = None
+    beta1 = 0.9
+    beta2 = 0.999
+    eps = 1e-8
+    step = 0
+    if optimizer == "adam":
+        m = [0.0] * NUM_FEATURES
+        v = [0.0] * NUM_FEATURES
 
     for epoch in range(args.epochs):
         random.shuffle(samples)
@@ -311,13 +331,79 @@ def train(samples: List[Sample], args):
                 else:
                     raise ValueError(f"Unknown objective: {objective}")
             inv_bs = 1.0 / max(1, len(batch))
-            for i in range(NUM_FEATURES):
-                grad[i] = grad[i] * inv_bs + l2 * w[i]
-                w[i] -= lr * grad[i]
+            if optimizer == "sgd":
+                for i in range(NUM_FEATURES):
+                    g = grad[i] * inv_bs + l2 * w[i]
+                    w[i] -= lr * g
+            else:
+                step += 1
+                assert m is not None and v is not None
+                bias_correction1 = 1.0 - (beta1**step)
+                bias_correction2 = 1.0 - (beta2**step)
+                for i in range(NUM_FEATURES):
+                    g = grad[i] * inv_bs + l2 * w[i]
+                    mi = m[i] = beta1 * m[i] + (1.0 - beta1) * g
+                    vi = v[i] = beta2 * v[i] + (1.0 - beta2) * (g * g)
+                    m_hat = mi / max(1e-12, bias_correction1)
+                    v_hat = vi / max(1e-12, bias_correction2)
+                    w[i] -= lr * m_hat / (math.sqrt(v_hat) + eps)
 
         avg_loss = total_loss / max(1, len(samples))
-        print(f"Epoch {epoch+1}/{args.epochs}: avg_loss={avg_loss:.4f}")
+        if objective == "cp":
+            rmse_est = math.sqrt(max(0.0, 2.0 * avg_loss)) * scale
+            max_w = max(abs(x) for x in w) if w else 0.0
+            print(f"Epoch {epoch+1}/{args.epochs}: avg_loss={avg_loss:.4f} (rmse≈{rmse_est:.1f} cp, max|w|={max_w:.3f})")
+        else:
+            max_w = max(abs(x) for x in w) if w else 0.0
+            print(f"Epoch {epoch+1}/{args.epochs}: avg_loss={avg_loss:.4f} (max|w|={max_w:.3f})")
     return w
+
+
+def train_ridge(samples: List[Sample], args):
+    if args.objective != "cp":
+        raise ValueError("optimizer=ridge is only supported for objective=cp")
+    try:
+        import numpy as np
+    except Exception as e:  # pragma: no cover
+        raise RuntimeError("optimizer=ridge requires numpy; use --optimizer adam/sgd instead") from e
+
+    n = len(samples)
+    if n == 0:
+        return [0.0] * NUM_FEATURES
+
+    scale = float(args.mse_scale)
+    if scale <= 0:
+        raise ValueError("--mse-scale must be > 0 for objective=cp")
+
+    X = np.zeros((n, NUM_FEATURES), dtype=np.float64)
+    y = np.zeros(n, dtype=np.float64)
+    for i, s in enumerate(samples):
+        y[i] = s.label - s.base
+        for idx, val in s.features:
+            X[i, idx] = val
+    # Objective in SGD form:
+    #   (1/(2n)) * ||(Xw - y)/scale||^2 + (l2/2) * ||w||^2
+    # => normal eq:
+    #   (XᵀX + n*scale^2*l2 * I) w = Xᵀy
+    lam = float(n) * (scale * scale) * float(args.l2)
+    if lam <= 0:
+        # With l2=0, XᵀX can be singular (unused/collinear features). Use SVD least-squares.
+        w, _, rank, _ = np.linalg.lstsq(X, y, rcond=None)
+        max_w = float(np.max(np.abs(w))) if w.size else 0.0
+        print(f"OLS solve: rank={rank}/{NUM_FEATURES} max|w|={max_w:.3f} (lambda={lam:.3f})")
+        return w.tolist()
+
+    xtx = X.T @ X
+    xty = X.T @ y
+    xtx.flat[:: NUM_FEATURES + 1] += lam
+    try:
+        w = np.linalg.solve(xtx, xty)
+    except np.linalg.LinAlgError:
+        # Extremely ill-conditioned; fall back to least-squares on the normal equations.
+        w, *_ = np.linalg.lstsq(xtx, xty, rcond=None)
+    max_w = float(np.max(np.abs(w))) if w.size else 0.0
+    print(f"Ridge solve: max|w|={max_w:.3f} (lambda={lam:.3f})")
+    return w.tolist()
 
 
 def predict_sign(sample: Sample, w) -> int:
@@ -363,7 +449,24 @@ def clamp_and_round(value: float, clamp: float) -> int:
     return int(round(value))
 
 
-def emit_header(w, path: str, pst_clamp: float, small_clamp: float):
+def clamp_for_emission(w, pst_clamp: float, small_clamp: float, tempo_clamp: float, bias_clamp: float):
+    """Return the weights as they will be emitted to the C++ header (clamped + rounded)."""
+    w_out = list(w)
+    for pt_idx, _ in enumerate(PIECE_ORDER):
+        for sq in range(64):
+            mg_idx = IDX_MG_START + pt_idx * 64 + sq
+            eg_idx = IDX_EG_START + pt_idx * 64 + sq
+            w_out[mg_idx] = float(clamp_and_round(w_out[mg_idx], pst_clamp))
+            w_out[eg_idx] = float(clamp_and_round(w_out[eg_idx], pst_clamp))
+
+    w_out[IDX_BISHOP_PAIR] = float(clamp_and_round(w_out[IDX_BISHOP_PAIR], small_clamp))
+    w_out[IDX_KING_PROX] = float(clamp_and_round(w_out[IDX_KING_PROX], small_clamp))
+    w_out[IDX_TEMPO] = float(clamp_and_round(w_out[IDX_TEMPO], tempo_clamp))
+    w_out[IDX_BIAS] = float(clamp_and_round(w_out[IDX_BIAS], bias_clamp))
+    return w_out
+
+
+def emit_header(w, path: str, pst_clamp: float, small_clamp: float, tempo_clamp: float, bias_clamp: float):
     if len(w) < NUM_FEATURES:
         raise ValueError(f"Weight vector too small: got {len(w)}, expected >= {NUM_FEATURES}")
     dirpath = os.path.dirname(os.path.abspath(path))
@@ -391,9 +494,9 @@ def emit_header(w, path: str, pst_clamp: float, small_clamp: float):
             raise IndexError(f"{idx_name} index {idx} out of range for len(w)={len(w)}")
 
     bp = clamp_and_round(w[IDX_BISHOP_PAIR], small_clamp)
-    tempo = clamp_and_round(w[IDX_TEMPO], small_clamp)
+    tempo = clamp_and_round(w[IDX_TEMPO], tempo_clamp)
     king_prox = clamp_and_round(w[IDX_KING_PROX], small_clamp)
-    bias = clamp_and_round(w[IDX_BIAS], small_clamp)
+    bias = clamp_and_round(w[IDX_BIAS], bias_clamp)
 
     def fmt_table(table):
         lines = []
@@ -446,13 +549,21 @@ def parse_args():
     p.add_argument("--max-samples", type=int, default=0, help="Limit number of samples (0 = all).")
     p.add_argument("--seed", type=int, default=13, help="RNG seed.")
     p.add_argument("--epochs", type=int, default=8, help="Training epochs.")
-    p.add_argument("--batch-size", type=int, default=512, help="Batch size for SGD.")
-    p.add_argument("--lr", type=float, default=0.05, help="Learning rate.")
+    p.add_argument(
+        "--optimizer",
+        choices=("adam", "sgd", "ridge"),
+        default=None,
+        help="Optimizer/solver: ridge (closed-form for objective=cp), or adam/sgd (iterative).",
+    )
+    p.add_argument("--batch-size", type=int, default=128, help="Batch size for training.")
+    p.add_argument("--lr", type=float, default=0.01, help="Learning rate.")
     p.add_argument("--l2", type=float, default=1e-4, help="L2 weight decay.")
     p.add_argument("--logistic-scale", type=float, default=400.0, help="Scale for Texel logistic loss.")
     p.add_argument("--mse-scale", type=float, default=50.0, help="Normalization for cp MSE (objective=cp).")
     p.add_argument("--pst-clamp", type=float, default=200.0, help="Clamp for PST weights.")
-    p.add_argument("--small-clamp", type=float, default=50.0, help="Clamp for bishop pair/tempo/etc.")
+    p.add_argument("--small-clamp", type=float, default=50.0, help="Clamp for bishop pair / king proximity.")
+    p.add_argument("--tempo-clamp", type=float, default=50.0, help="Clamp for tempo bonus.")
+    p.add_argument("--bias-clamp", type=float, default=50.0, help="Clamp for eval bias.")
     p.add_argument("--objective", choices=("sign", "cp"), default="cp", help="Training objective: sign-classification or cp-regression.")
     p.add_argument("--require-deep", action="store_true", help="Only use eval_deep_cp; skip rows without deep labels.")
     p.add_argument("--label-clamp", type=int, default=2000, help="Clamp labels to +/-N centipawns (0 disables).")
@@ -491,6 +602,8 @@ def load_samples(path: str, max_samples: int, objective: str, require_deep: bool
 
 def main():
     args = parse_args()
+    if args.optimizer is None:
+        args.optimizer = "ridge" if args.objective == "cp" else "adam"
     random.seed(args.seed)
     samples = load_samples(args.input, args.max_samples, args.objective, args.require_deep, args.label_clamp)
     if not samples:
@@ -503,6 +616,19 @@ def main():
     val_samples = samples[split:]
 
     print(f"Loaded {len(samples)} samples (train {len(train_samples)}, val {len(val_samples)}).")
+    w0 = [0.0] * NUM_FEATURES
+    base_train_acc = accuracy(train_samples, w0)
+    base_val_acc = accuracy(val_samples, w0)
+    if args.objective == "cp":
+        base_train_rmse = rmse(train_samples, w0)
+        base_val_rmse = rmse(val_samples, w0)
+        print(
+            f"Baseline RMSE(cp): train={base_train_rmse:.1f} val={base_val_rmse:.1f} | "
+            f"sign_acc: train={base_train_acc*100:.2f}% val={base_val_acc*100:.2f}%"
+        )
+    else:
+        print(f"Baseline sign accuracy: train={base_train_acc*100:.2f}% val={base_val_acc*100:.2f}%")
+
     w = train(train_samples, args)
     train_acc = accuracy(train_samples, w)
     val_acc = accuracy(val_samples, w)
@@ -513,7 +639,21 @@ def main():
     else:
         print(f"Texel sign accuracy: train={train_acc*100:.2f}% val={val_acc*100:.2f}%")
 
-    emit_header(w, args.output_header, args.pst_clamp, args.small_clamp)
+    w_emitted = clamp_for_emission(w, args.pst_clamp, args.small_clamp, args.tempo_clamp, args.bias_clamp)
+    if any(a != b for a, b in zip(w, w_emitted)):
+        train_acc_e = accuracy(train_samples, w_emitted)
+        val_acc_e = accuracy(val_samples, w_emitted)
+        if args.objective == "cp":
+            train_rmse_e = rmse(train_samples, w_emitted)
+            val_rmse_e = rmse(val_samples, w_emitted)
+            print(
+                f"RMSE(cp, emitted): train={train_rmse_e:.1f} val={val_rmse_e:.1f} | "
+                f"sign_acc: train={train_acc_e*100:.2f}% val={val_acc_e*100:.2f}%"
+            )
+        else:
+            print(f"Texel sign accuracy (emitted): train={train_acc_e*100:.2f}% val={val_acc_e*100:.2f}%")
+
+    emit_header(w_emitted, args.output_header, args.pst_clamp, args.small_clamp, args.tempo_clamp, args.bias_clamp)
 
 
 if __name__ == "__main__":

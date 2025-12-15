@@ -90,6 +90,9 @@ See LICENSE file for details.
 #include <chrono>
 #include <iostream>
 #include <sstream>
+#include <fstream>
+#include <unordered_map>
+#include <iomanip>
 #include <cstdlib>
 #include <cstdio>
 #include <cctype>
@@ -107,6 +110,7 @@ See LICENSE file for details.
 #include <string> // Required for std::to_string()
 #include <iostream> // For printing output
 #include <chrono>
+#include <cstdint>
 
 // ---------------------------
 // Small helpers
@@ -134,6 +138,248 @@ static inline void log_board_fen(const Board &, const char * = nullptr) {}
 // Unconditional diagnostic logging to stderr (safe for protocol).
 static inline void diag_log(const std::string &msg) {
     std::cerr << "[diag] " << msg << std::endl;
+}
+
+static void skip_whitespace(const std::string &s, size_t &pos) {
+    while (pos < s.size() && std::isspace(static_cast<unsigned char>(s[pos]))) ++pos;
+}
+
+static bool parse_json_string(const std::string &s, size_t &pos, std::string &out) {
+    out.clear();
+    if (pos >= s.size() || s[pos] != '"') return false;
+    ++pos;
+    while (pos < s.size()) {
+        char ch = s[pos++];
+        if (ch == '"') {
+            return true;
+        }
+        if (ch == '\\') {
+            if (pos >= s.size()) return false;
+            char esc = s[pos++];
+            switch (esc) {
+                case '"': out.push_back('"'); break;
+                case '\\': out.push_back('\\'); break;
+                case '/': out.push_back('/'); break;
+                case 'b': out.push_back('\b'); break;
+                case 'f': out.push_back('\f'); break;
+                case 'n': out.push_back('\n'); break;
+                case 'r': out.push_back('\r'); break;
+                case 't': out.push_back('\t'); break;
+                case 'u': {
+                    if (pos + 4 > s.size()) return false;
+                    unsigned value = 0;
+                    for (int i = 0; i < 4; ++i) {
+                        char h = s[pos++];
+                        value <<= 4;
+                        if (h >= '0' && h <= '9') value |= (h - '0');
+                        else if (h >= 'a' && h <= 'f') value |= (h - 'a' + 10);
+                        else if (h >= 'A' && h <= 'F') value |= (h - 'A' + 10);
+                        else return false;
+                    }
+                    if (value <= 0x7F) {
+                        out.push_back(static_cast<char>(value));
+                    } else if (value <= 0x7FF) {
+                        out.push_back(static_cast<char>(0xC0 | ((value >> 6) & 0x1F)));
+                        out.push_back(static_cast<char>(0x80 | (value & 0x3F)));
+                    } else {
+                        out.push_back(static_cast<char>(0xE0 | ((value >> 12) & 0x0F)));
+                        out.push_back(static_cast<char>(0x80 | ((value >> 6) & 0x3F)));
+                        out.push_back(static_cast<char>(0x80 | (value & 0x3F)));
+                    }
+                    break;
+                }
+                default:
+                    return false;
+            }
+        } else {
+            if (static_cast<unsigned char>(ch) < 0x20) return false;
+            out.push_back(ch);
+        }
+    }
+    return false;
+}
+
+static std::string format_key_hex(uint64_t key) {
+    std::ostringstream oss;
+    oss << "0x" << std::hex << std::setw(16) << std::setfill('0') << key;
+    return oss.str();
+}
+
+// ---------------------------
+// Opening book
+// ---------------------------
+
+static const char *DEFAULT_BOOK_PATH = "build/opening_book_map.json";
+
+static std::string resolve_book_path() {
+    if (const char *env = std::getenv("ENGINE_BOOK_PATH")) {
+        if (*env) {
+            return std::string(env);
+        }
+    }
+    return std::string(DEFAULT_BOOK_PATH);
+}
+
+struct OpeningBook {
+    std::unordered_map<uint64_t, std::string> entries;
+    bool loaded = false;
+
+    bool load_from_file(const std::string &path) {
+        if (loaded) return !entries.empty();
+        std::ifstream in(path);
+        if (!in) {
+            diag_log("opening_book: missing file at " + path);
+            loaded = true;
+            return false;
+        }
+        std::stringstream buffer;
+        buffer << in.rdbuf();
+        std::string s = buffer.str();
+        size_t pos = 0;
+        bool malformed = false;
+        size_t parsed_pairs = 0;
+        skip_whitespace(s, pos);
+        if (pos >= s.size() || s[pos] != '{') {
+            diag_log("opening_book: invalid JSON map format");
+            loaded = true;
+            return false;
+        }
+        ++pos;
+        while (pos < s.size()) {
+            skip_whitespace(s, pos);
+            if (pos < s.size() && s[pos] == '}') {
+                ++pos;
+                break;
+            }
+            if (pos >= s.size() || s[pos] != '"') {
+                malformed = true;
+                break;
+            }
+            std::string key_str;
+            if (!parse_json_string(s, pos, key_str)) {
+                malformed = true;
+                break;
+            }
+            skip_whitespace(s, pos);
+            if (pos >= s.size() || s[pos] != ':') {
+                malformed = true;
+                break;
+            }
+            ++pos;
+            skip_whitespace(s, pos);
+            if (pos >= s.size() || s[pos] != '"') {
+                malformed = true;
+                break;
+            }
+            std::string move_str;
+            if (!parse_json_string(s, pos, move_str)) {
+                malformed = true;
+                break;
+            }
+            uint64_t key = 0;
+            bool valid_key = true;
+            try {
+                key = std::stoull(key_str, nullptr, 16);
+            } catch (const std::exception &) {
+                diag_log("opening_book: bad key " + key_str);
+                valid_key = false;
+            }
+            if (valid_key && !move_str.empty()) {
+                entries[key] = move_str;
+                ++parsed_pairs;
+            }
+            skip_whitespace(s, pos);
+            if (pos < s.size() && s[pos] == ',') {
+                ++pos;
+                continue;
+            }
+            if (pos < s.size() && s[pos] == '}') {
+                ++pos;
+                break;
+            }
+            if (pos >= s.size()) {
+                malformed = true;
+                break;
+            }
+        }
+        skip_whitespace(s, pos);
+        if (malformed || pos != s.size()) {
+            diag_log("opening_book: malformed JSON; discarding " + std::to_string(parsed_pairs) + " entries");
+            entries.clear();
+            loaded = true;
+            return false;
+        }
+        loaded = true;
+        diag_log("opening_book: loaded " + std::to_string(entries.size()) + " entries from " + path);
+        return !entries.empty();
+    }
+
+    bool lookup(uint64_t key, std::string &uci) const {
+        auto it = entries.find(key);
+        if (it == entries.end()) return false;
+        uci = it->second;
+        return true;
+    }
+};
+
+static const std::string BOOK_PATH = resolve_book_path();
+static OpeningBook g_book;
+
+static bool book_move_for_root(EngineSession &sess, const MoveList &rootMoves, Move &out) {
+    static bool init_attempted = false;
+    static bool book_enabled = false;
+    if (!init_attempted) {
+        init_attempted = true;
+        std::ifstream in_sz(BOOK_PATH, std::ios::binary | std::ios::ate);
+        if (in_sz) {
+            std::streamsize sz = in_sz.tellg();
+            const std::streamsize kMaxSize = static_cast<std::streamsize>(64) * 1024 * 1024;
+            if (sz > kMaxSize) {
+                diag_log("opening_book: file too large, refusing to load (" + std::to_string(static_cast<long long>(sz)) + " bytes)");
+                g_book.loaded = true;
+                book_enabled = false;
+            } else if (sz > 0) {
+                book_enabled = g_book.load_from_file(BOOK_PATH) && !g_book.entries.empty();
+                if (!book_enabled) {
+                    diag_log("opening_book: disabled (empty or malformed): " + BOOK_PATH);
+                    g_book.loaded = true;
+                }
+            }
+        } else {
+            diag_log("opening_book: not found, disabled: " + BOOK_PATH);
+            g_book.loaded = true;
+            book_enabled = false;
+        }
+    }
+    if (!book_enabled) return false;
+    std::string uci;
+    if (!g_book.lookup(sess.board.zobrist_key, uci)) {
+        return false;
+    }
+    Move parsed;
+    if (!parse_uci_move(sess.board, uci, parsed) || parsed.isNull()) {
+        diag_log("opening_book: book move illegal key=" + format_key_hex(sess.board.zobrist_key) + " uci=" + uci);
+        return false;
+    }
+    bool found_in_root = false;
+    for (int i = 0; i < rootMoves.count; ++i) {
+        if (rootMoves.moves[i].raw() == parsed.raw()) {
+            found_in_root = true;
+            break;
+        }
+    }
+    if (!found_in_root) {
+        diag_log("opening_book: parsed move not in root list key=" + format_key_hex(sess.board.zobrist_key) + " uci=" + uci);
+        return false;
+    }
+    if (move_to_uci(parsed) != uci) {
+        diag_log("opening_book: UCI mismatch after parse key=" + format_key_hex(sess.board.zobrist_key) + " got=" + move_to_uci(parsed) + " want=" + uci);
+        return false;
+    }
+    out = parsed;
+    diag_log("opening_book: hit key=" + format_key_hex(sess.board.zobrist_key) + " move=" + uci +
+             " stm=" + std::string(sess.board.side == WHITE ? "w" : "b"));
+    return true;
 }
 
 static inline int opposite_side(int s) {
@@ -338,6 +584,13 @@ static Move search_best_move(EngineSession &sess) {
                  " score=" + std::to_string(sess.last_root_score) +
                  " move=0000");
         return Move(); // null move signals terminal
+    }
+
+    // Opening book (root only)
+    Move bookMove;
+    if (book_move_for_root(sess, rootMoves, bookMove)) {
+        diag_log("search_best_move: using book move " + move_to_uci(bookMove));
+        return bookMove;
     }
 
     int remaining = sess.my_time_ms > 0 ? sess.my_time_ms : 50;
