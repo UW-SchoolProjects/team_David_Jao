@@ -30,5 +30,21 @@
 - Defaults: deep depth = shallow+2 (or deep_time_ms = move_time_ms*3), tanh scale 400, workers = min(cpu_count, 8).
 - Output schema extends the input with `eval_deep_cp` and `eval_deep_norm`; failures logged to `build/deep_label_failures.log`.
 
+### Opening book miner (`opening_book_miner.py`)
+- Purpose: mine forced-capture self-play (NDJSON) for opening W/D/L stats in the first N plies and emit a compact book map.
+- Input format (one JSON per line): `{"moves": ["e2e4", ...], "result": "1-0", "start_fen": "...", "fens": ["<fen-before-ply0>", ...]}`. `fens` is optional; if missing, the script replays plies via python-chess (preferred) or `./program` (force mode).
+- Recommended invocation:
+  ```bash
+  python3 scripts/opening_book_miner.py \
+    --input build/selfplay_games.jsonl.gz \
+    --max-ply 8 \
+    --min-samples 6 \
+    --top-n 2 \
+    --output-map build/opening_book_map.json \
+    --output-details build/opening_book_stats.jsonl \
+    --engine-cmd ./program
+  ```
+- Output: compact map JSON (`hex_key -> best UCI`) plus detailed JSONL with top moves and W/D/L counts; failures logged to `build/opening_miner_fail.log`.
+
 ### Blitz gauntlet (`blitz_gauntlet.sh`)
 - Stresses new builds vs a reference at 1+0 (see inline comments).
