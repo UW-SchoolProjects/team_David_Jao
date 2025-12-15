@@ -161,7 +161,7 @@ def build_sample(fen: str, label_cp: int, objective: str, label_clamp: int) -> O
     squares, side = parse_fen(fen)
     if squares is None or side not in ("w", "b"):
         return None
-    if label_cp == 0:
+    if objective == "sign" and label_cp == 0:
         return None
     if label_clamp > 0:
         label_cp = max(-label_clamp, min(label_clamp, label_cp))
@@ -237,7 +237,9 @@ def build_sample(fen: str, label_cp: int, objective: str, label_clamp: int) -> O
         dist = manhattan(king_sq["w"], king_sq["b"])
         prox = max(0, 10 - dist)
         if prox > 0:
-            scaled_features.append((IDX_KING_PROX, prox * eg_wt))
+            # This term is applied in White POV then converted to side-to-move POV,
+            # so it must be oriented by stm_sign here.
+            scaled_features.append((IDX_KING_PROX, prox * eg_wt * stm_sign))
 
     # Bias term
     scaled_features.append((IDX_BIAS, 1.0))
@@ -271,10 +273,24 @@ def train(samples: List[Sample], args):
     l2 = args.l2
     scale = args.logistic_scale
     objective = args.objective
+    optimizer = getattr(args, "optimizer", "sgd")
     if objective == "cp":
         scale = float(args.mse_scale)
         if scale <= 0:
             raise ValueError("--mse-scale must be > 0 for objective=cp")
+
+    if optimizer not in ("sgd", "adam"):
+        raise ValueError(f"Unknown optimizer: {optimizer}")
+
+    m = None
+    v = None
+    beta1 = 0.9
+    beta2 = 0.999
+    eps = 1e-8
+    step = 0
+    if optimizer == "adam":
+        m = [0.0] * NUM_FEATURES
+        v = [0.0] * NUM_FEATURES
 
     for epoch in range(args.epochs):
         random.shuffle(samples)
@@ -311,12 +327,31 @@ def train(samples: List[Sample], args):
                 else:
                     raise ValueError(f"Unknown objective: {objective}")
             inv_bs = 1.0 / max(1, len(batch))
-            for i in range(NUM_FEATURES):
-                grad[i] = grad[i] * inv_bs + l2 * w[i]
-                w[i] -= lr * grad[i]
+            if optimizer == "sgd":
+                for i in range(NUM_FEATURES):
+                    g = grad[i] * inv_bs + l2 * w[i]
+                    w[i] -= lr * g
+            else:
+                step += 1
+                assert m is not None and v is not None
+                bias_correction1 = 1.0 - (beta1**step)
+                bias_correction2 = 1.0 - (beta2**step)
+                for i in range(NUM_FEATURES):
+                    g = grad[i] * inv_bs + l2 * w[i]
+                    mi = m[i] = beta1 * m[i] + (1.0 - beta1) * g
+                    vi = v[i] = beta2 * v[i] + (1.0 - beta2) * (g * g)
+                    m_hat = mi / max(1e-12, bias_correction1)
+                    v_hat = vi / max(1e-12, bias_correction2)
+                    w[i] -= lr * m_hat / (math.sqrt(v_hat) + eps)
 
         avg_loss = total_loss / max(1, len(samples))
-        print(f"Epoch {epoch+1}/{args.epochs}: avg_loss={avg_loss:.4f}")
+        if objective == "cp":
+            rmse_est = math.sqrt(max(0.0, 2.0 * avg_loss)) * scale
+            max_w = max(abs(x) for x in w) if w else 0.0
+            print(f"Epoch {epoch+1}/{args.epochs}: avg_loss={avg_loss:.4f} (rmse≈{rmse_est:.1f} cp, max|w|={max_w:.3f})")
+        else:
+            max_w = max(abs(x) for x in w) if w else 0.0
+            print(f"Epoch {epoch+1}/{args.epochs}: avg_loss={avg_loss:.4f} (max|w|={max_w:.3f})")
     return w
 
 
@@ -446,8 +481,9 @@ def parse_args():
     p.add_argument("--max-samples", type=int, default=0, help="Limit number of samples (0 = all).")
     p.add_argument("--seed", type=int, default=13, help="RNG seed.")
     p.add_argument("--epochs", type=int, default=8, help="Training epochs.")
-    p.add_argument("--batch-size", type=int, default=512, help="Batch size for SGD.")
-    p.add_argument("--lr", type=float, default=0.05, help="Learning rate.")
+    p.add_argument("--optimizer", choices=("adam", "sgd"), default="adam", help="Optimizer (default: adam).")
+    p.add_argument("--batch-size", type=int, default=128, help="Batch size for training.")
+    p.add_argument("--lr", type=float, default=0.01, help="Learning rate.")
     p.add_argument("--l2", type=float, default=1e-4, help="L2 weight decay.")
     p.add_argument("--logistic-scale", type=float, default=400.0, help="Scale for Texel logistic loss.")
     p.add_argument("--mse-scale", type=float, default=50.0, help="Normalization for cp MSE (objective=cp).")
@@ -503,6 +539,19 @@ def main():
     val_samples = samples[split:]
 
     print(f"Loaded {len(samples)} samples (train {len(train_samples)}, val {len(val_samples)}).")
+    w0 = [0.0] * NUM_FEATURES
+    base_train_acc = accuracy(train_samples, w0)
+    base_val_acc = accuracy(val_samples, w0)
+    if args.objective == "cp":
+        base_train_rmse = rmse(train_samples, w0)
+        base_val_rmse = rmse(val_samples, w0)
+        print(
+            f"Baseline RMSE(cp): train={base_train_rmse:.1f} val={base_val_rmse:.1f} | "
+            f"sign_acc: train={base_train_acc*100:.2f}% val={base_val_acc*100:.2f}%"
+        )
+    else:
+        print(f"Baseline sign accuracy: train={base_train_acc*100:.2f}% val={base_val_acc*100:.2f}%")
+
     w = train(train_samples, args)
     train_acc = accuracy(train_samples, w)
     val_acc = accuracy(val_samples, w)

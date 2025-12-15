@@ -92,6 +92,7 @@ See LICENSE file for details.
 #include <sstream>
 #include <fstream>
 #include <unordered_map>
+#include <iomanip>
 #include <cstdlib>
 #include <cstdio>
 #include <cctype>
@@ -139,9 +140,59 @@ static inline void diag_log(const std::string &msg) {
     std::cerr << "[diag] " << msg << std::endl;
 }
 
+static void skip_whitespace(const std::string &s, size_t &pos) {
+    while (pos < s.size() && std::isspace(static_cast<unsigned char>(s[pos]))) ++pos;
+}
+
+static bool parse_json_string(const std::string &s, size_t &pos, std::string &out) {
+    out.clear();
+    if (pos >= s.size() || s[pos] != '"') return false;
+    ++pos;
+    while (pos < s.size()) {
+        char ch = s[pos++];
+        if (ch == '"') {
+            return true;
+        }
+        if (ch == '\\' && pos < s.size()) {
+            char esc = s[pos++];
+            switch (esc) {
+                case '"': out.push_back('"'); break;
+                case '\\': out.push_back('\\'); break;
+                case '/': out.push_back('/'); break;
+                case 'b': out.push_back('\b'); break;
+                case 'f': out.push_back('\f'); break;
+                case 'n': out.push_back('\n'); break;
+                case 'r': out.push_back('\r'); break;
+                case 't': out.push_back('\t'); break;
+                default: out.push_back(esc); break;
+            }
+        } else {
+            out.push_back(ch);
+        }
+    }
+    return false;
+}
+
+static std::string format_key_hex(uint64_t key) {
+    std::ostringstream oss;
+    oss << "0x" << std::hex << std::setw(16) << std::setfill('0') << key;
+    return oss.str();
+}
+
 // ---------------------------
 // Opening book
 // ---------------------------
+
+static const char *DEFAULT_BOOK_PATH = "build/opening_book_map.json";
+
+static std::string resolve_book_path() {
+    if (const char *env = std::getenv("ENGINE_BOOK_PATH")) {
+        if (*env) {
+            return std::string(env);
+        }
+    }
+    return std::string(DEFAULT_BOOK_PATH);
+}
 
 struct OpeningBook {
     std::unordered_map<uint64_t, std::string> entries;
@@ -158,52 +209,79 @@ struct OpeningBook {
         std::stringstream buffer;
         buffer << in.rdbuf();
         std::string s = buffer.str();
-        size_t i = 0;
-        auto skip_ws = [&](size_t &pos) {
-            while (pos < s.size() && std::isspace(static_cast<unsigned char>(s[pos]))) ++pos;
-        };
-        skip_ws(i);
-        if (i >= s.size() || s[i] != '{') {
+        size_t pos = 0;
+        bool malformed = false;
+        size_t parsed_pairs = 0;
+        skip_whitespace(s, pos);
+        if (pos >= s.size() || s[pos] != '{') {
             diag_log("opening_book: invalid JSON map format");
             loaded = true;
             return false;
         }
-        ++i;
-        while (i < s.size()) {
-            skip_ws(i);
-            if (i < s.size() && s[i] == '}') break;
-            if (i >= s.size() || s[i] != '"') break;
-            ++i;
-            size_t start_key = i;
-            while (i < s.size() && s[i] != '"') ++i;
-            if (i >= s.size()) break;
-            std::string key_str = s.substr(start_key, i - start_key);
-            ++i;
-            skip_ws(i);
-            if (i >= s.size() || s[i] != ':') break;
-            ++i;
-            skip_ws(i);
-            if (i >= s.size() || s[i] != '"') break;
-            ++i;
-            size_t start_val = i;
-            while (i < s.size() && s[i] != '"') ++i;
-            if (i >= s.size()) break;
-            std::string move_str = s.substr(start_val, i - start_val);
-            ++i;
+        ++pos;
+        while (pos < s.size()) {
+            skip_whitespace(s, pos);
+            if (pos < s.size() && s[pos] == '}') {
+                ++pos;
+                break;
+            }
+            if (pos >= s.size() || s[pos] != '"') {
+                malformed = true;
+                break;
+            }
+            std::string key_str;
+            if (!parse_json_string(s, pos, key_str)) {
+                malformed = true;
+                break;
+            }
+            skip_whitespace(s, pos);
+            if (pos >= s.size() || s[pos] != ':') {
+                malformed = true;
+                break;
+            }
+            ++pos;
+            skip_whitespace(s, pos);
+            if (pos >= s.size() || s[pos] != '"') {
+                malformed = true;
+                break;
+            }
+            std::string move_str;
+            if (!parse_json_string(s, pos, move_str)) {
+                malformed = true;
+                break;
+            }
             uint64_t key = 0;
+            bool valid_key = true;
             try {
                 key = std::stoull(key_str, nullptr, 16);
             } catch (const std::exception &) {
                 diag_log("opening_book: bad key " + key_str);
+                valid_key = false;
             }
-            if (!move_str.empty()) {
+            if (valid_key && !move_str.empty()) {
                 entries[key] = move_str;
+                ++parsed_pairs;
             }
-            skip_ws(i);
-            if (i < s.size() && s[i] == ',') {
-                ++i;
+            skip_whitespace(s, pos);
+            if (pos < s.size() && s[pos] == ',') {
+                ++pos;
                 continue;
             }
+            if (pos < s.size() && s[pos] == '}') {
+                ++pos;
+                break;
+            }
+            if (pos >= s.size()) {
+                malformed = true;
+                break;
+            }
+        }
+        skip_whitespace(s, pos);
+        if (malformed || pos != s.size()) {
+            diag_log("opening_book: malformed JSON; discarding " + std::to_string(parsed_pairs) + " entries");
+            entries.clear();
+            loaded = true;
+            return false;
         }
         loaded = true;
         diag_log("opening_book: loaded " + std::to_string(entries.size()) + " entries from " + path);
@@ -218,8 +296,8 @@ struct OpeningBook {
     }
 };
 
+static const std::string BOOK_PATH = resolve_book_path();
 static OpeningBook g_book;
-static const char *BOOK_PATH = "build/opening_book_map.json";
 
 static bool book_move_for_root(EngineSession &sess, const MoveList &rootMoves, Move &out) {
     if (!g_book.loaded) {
@@ -231,7 +309,7 @@ static bool book_move_for_root(EngineSession &sess, const MoveList &rootMoves, M
     }
     Move parsed;
     if (!parse_uci_move(sess.board, uci, parsed)) {
-        diag_log("opening_book: book move illegal in position key=" + std::to_string(sess.board.zobrist_key) + " uci=" + uci);
+        diag_log("opening_book: book move illegal in position key=" + format_key_hex(sess.board.zobrist_key) + " uci=" + uci);
         return false;
     }
     bool found_in_root = false;
@@ -242,11 +320,12 @@ static bool book_move_for_root(EngineSession &sess, const MoveList &rootMoves, M
         }
     }
     if (!found_in_root) {
-        diag_log("opening_book: parsed move not in root move list uci=" + uci);
+        diag_log("opening_book: parsed move not in root move list key=" + format_key_hex(sess.board.zobrist_key) + " uci=" + uci);
         return false;
     }
     out = parsed;
-    diag_log("opening_book: hit key=" + std::to_string(sess.board.zobrist_key) + " move=" + uci + " stm=" + std::string(sess.board.side == WHITE ? "w" : "b"));
+    diag_log("opening_book: hit key=" + format_key_hex(sess.board.zobrist_key) + " move=" + uci +
+             " stm=" + std::string(sess.board.side == WHITE ? "w" : "b"));
     return true;
 }
 
