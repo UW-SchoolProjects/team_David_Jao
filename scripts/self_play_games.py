@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 """Generate NDJSON self-play games for the forced-capture variant.
 
-Each line: {"moves": [...], "result": "1-0/0-1/1/2-1/2", "start_fen": "...",
-            "ply_data": [{"fen": "...", "zobrist_key": "0x...", "move": "..."}]}
+Each line:
+  {
+    "moves": [...],
+    "result": "1-0" | "0-1" | "1/2-1/2",
+    "start_fen": "...",
+    "ply_data": [{"fen": "...", "zobrist_key": "0x...", "move": "..."}],
+    "game_id": <int>
+  }
 """
 
 import argparse
@@ -13,10 +19,7 @@ import shlex
 import subprocess
 import sys
 import time
-from typing import List, Optional, Tuple
-
-# --- Zobrist (reuse engine scheme) ---
-import hashlib
+from typing import List, Optional
 
 DEFAULT_START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 FEN_TO_PIECE = {"P": 1, "N": 2, "B": 3, "R": 4, "Q": 5, "K": 6, "p": 9, "n": 10, "b": 11, "r": 12, "q": 13, "k": 14}
@@ -125,6 +128,8 @@ def zobrist_from_fen(fen: str) -> Optional[int]:
 
 def send(proc: subprocess.Popen, cmd: str) -> bool:
     try:
+        if proc.stdin is None:
+            return False
         proc.stdin.write(cmd + "\n")
         proc.stdin.flush()
         return True
@@ -132,14 +137,35 @@ def send(proc: subprocess.Popen, cmd: str) -> bool:
         return False
 
 def read_until(proc: subprocess.Popen, timeout: float, predicate) -> Optional[str]:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        rlist, _, _ = select.select([proc.stdout], [], [], max(0, deadline - time.time()))
-        if not rlist:
+    end = time.time() + timeout
+    stdout = proc.stdout
+    if stdout is None:
+        return None
+    while time.time() < end:
+        remaining = max(0.0, end - time.time())
+        if proc.poll() is not None:
+            return None
+        try:
+            ready, _, _ = select.select([stdout], [], [], remaining)
+        except (ValueError, OSError):
+            return None
+        if not ready:
             continue
-        line = proc.stdout.readline()
-        if not line:
-            break
+        try:
+            line = stdout.readline()
+        except Exception:
+            return None
+        if line is None:
+            continue
+        if line == "":
+            if proc.poll() is not None:
+                return None
+            continue
+        if isinstance(line, bytes):
+            try:
+                line = line.decode(errors="ignore")
+            except Exception:
+                continue
         line = line.strip()
         if not line:
             continue
@@ -186,6 +212,28 @@ def _drain_stderr_nonblock(proc: subprocess.Popen) -> None:
     except Exception:
         pass
 
+def _drain_stdout_nonblock(proc: subprocess.Popen, timeout: float = 0.05) -> None:
+    stdout = proc.stdout
+    if stdout is None:
+        return
+    end = time.time() + timeout
+    while time.time() < end:
+        if proc.poll() is not None:
+            return
+        remaining = max(0.0, end - time.time())
+        try:
+            ready, _, _ = select.select([stdout], [], [], remaining)
+        except (ValueError, OSError):
+            return
+        if not ready:
+            return
+        try:
+            line = stdout.readline()
+        except Exception:
+            return
+        if not line:
+            return
+
 def handshake(proc: subprocess.Popen, move_time_ms: int, depth: int, timeout: float = 1.0) -> bool:
     if not send(proc, "xboard"):
         return False
@@ -197,6 +245,7 @@ def handshake(proc: subprocess.Popen, move_time_ms: int, depth: int, timeout: fl
     send(proc, f"stms {move_time_ms}")
     send(proc, f"time {move_time_ms*10}")
     send(proc, f"otim {move_time_ms*10}")
+    _drain_stdout_nonblock(proc, timeout=0.1)
     _drain_stderr_nonblock(proc)
     probe = query_prefix(proc, "david_fen", "fen ", timeout=timeout)
     _drain_stderr_nonblock(proc)
@@ -207,7 +256,31 @@ def request_fen(proc: subprocess.Popen) -> Optional[str]:
     if line is None:
         return None
     fen = line[len("fen "):].strip()
-    return fen if fen else None
+    if not fen:
+        return None
+    if len(fen.split()) < 6:
+        return None
+    return fen
+
+def request_lastscore(proc: subprocess.Popen) -> Optional[int]:
+    line = query_prefix(proc, "david_lastscore", "lastscore ", timeout=1.0)
+    if line is None:
+        return None
+    token = line[len("lastscore ") :].strip()
+    if not token or token == "none":
+        return None
+    try:
+        return int(token)
+    except ValueError:
+        return None
+
+def terminal_result_from_score(stm: str, score: Optional[int]) -> str:
+    # Engine reports terminal mate as a large negative for side-to-move.
+    if score is None:
+        return "1/2-1/2"
+    if score < 0:
+        return "0-1" if stm == "w" else "1-0"
+    return "1/2-1/2"
 
 def engine_best_move(proc: subprocess.Popen, side: str, move_timeout: float) -> Optional[str]:
     if proc.poll() is not None:
@@ -239,44 +312,23 @@ def play_game(proc: subprocess.Popen, game_id: int, max_plies: int, move_timeout
         key = zobrist_from_fen(fen)
         if key is None:
             return None
-        legal = list_moves(proc)
-        if not legal:
-            # terminal: capture final position
-            ply_data.append({"fen": fen, "zobrist_key": f"{key:016x}", "move": ""})
-            break
-        side = fen.split()[1] if len(fen.split()) > 1 else "w"
+        parts = fen.split()
+        side = parts[1] if len(parts) > 1 else "w"
         mv = engine_best_move(proc, side, move_timeout)
         if mv is None:
             return None
+        if mv == "0000":
+            score = request_lastscore(proc)
+            result = terminal_result_from_score(side, score)
+            return {"moves": moves, "result": result, "start_fen": start_fen, "ply_data": ply_data, "game_id": game_id}
         if mv in ("1-0", "0-1", "1/2-1/2"):
-            ply_data.append({"fen": fen, "zobrist_key": f"{key:016x}", "move": ""})
             result = mv
             return {"moves": moves, "result": result, "start_fen": start_fen, "ply_data": ply_data, "game_id": game_id}
         moves.append(mv)
-        ply_data.append({"fen": fen, "zobrist_key": f"{key:016x}", "move": mv})
-        send(proc, f"usermove {mv}")
-    # determine result: prefer explicit result line if emitted
-    res_line = read_until(proc, 0.5, lambda l: l in ("1-0", "0-1", "1/2-1/2"))
-    if res_line in ("1-0", "0-1", "1/2-1/2"):
-        result = res_line
-    else:
-        legal = list_moves(proc)
-        stm = request_fen(proc)
-        side = stm.split()[1] if stm else "w"
-        in_check = False
-        chk = query_prefix(proc, "david_check", "check ")
-        if chk is not None:
-            try:
-                in_check = bool(int(chk.split()[1]))
-            except Exception:
-                in_check = False
-        if legal == []:
-            if in_check:
-                result = "0-1" if side == "w" else "1-0"
-            else:
-                result = "1/2-1/2"
-        else:
-            result = "1/2-1/2"
+        ply_data.append({"fen": fen, "zobrist_key": f"0x{key:016x}", "move": mv})
+
+    # Truncated game: treat as draw (caller can filter/redo with higher --max-plies).
+    result = "1/2-1/2"
     return {"moves": moves, "result": result, "start_fen": start_fen, "ply_data": ply_data, "game_id": game_id}
 
 def main():
@@ -287,12 +339,17 @@ def main():
     ap.add_argument("--move-time-ms", type=int, default=150, help="Per-move time sent to engine.")
     ap.add_argument("--depth", type=int, default=6, help="Optional fixed depth (0 to ignore).")
     ap.add_argument("--move-timeout", type=float, default=5.0, help="Seconds to wait for engine move.")
-    ap.add_argument("--output", default="build/selfplay_games.jsonl", help="Output NDJSON path (.gz not supported).")
+    ap.add_argument("--output", default="build/selfplay_games.jsonl", help="Output NDJSON path (use .gz for gzip).")
     args = ap.parse_args()
 
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
 
-    with open(args.output, "w", encoding="utf-8") as out_fh:
+    opener = open
+    if args.output.endswith(".gz"):
+        import gzip
+
+        opener = gzip.open  # type: ignore[assignment]
+    with opener(args.output, "wt", encoding="utf-8") as out_fh:  # type: ignore[arg-type]
         for gid in range(1, args.games + 1):
             proc = start_engine(args.engine_cmd)
             try:

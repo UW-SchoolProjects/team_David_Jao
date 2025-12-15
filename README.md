@@ -5,7 +5,9 @@ This repo hosts the `Team_David_Jao` chess engine plus helper scripts for Epic 5
 
 - sample midgame forced-capture positions (`scripts/self_play_sampler.py`),
 - label them with a deeper, stabilised eval (`scripts/deep_labeler.py`),
-- and reuse the engine via CECP/XBoard for stress testing (`scripts/blitz_gauntlet.sh`).
+- persist complete NDJSON self-play games for opening analytics (`scripts/self_play_games.py` + `scripts/opening_book_miner.py`),
+- tune PST/eval weights with Texel (`scripts/texel_tuner.py`), and
+- reuse the engine via CECP/XBoard for stress testing (`scripts/blitz_gauntlet.sh`).
 
 ## Prerequisites
 - Linux toolchain (`g++`, `make`).
@@ -25,18 +27,19 @@ This repo hosts the `Team_David_Jao` chess engine plus helper scripts for Epic 5
    This emits `./program`, a CECP-compatible binary that automatically registers the `david_*` helpers.
 
 ### Running with XBoard
-1. Enable engine logging directory:
+1. (Optional) enable verbose instrumentation by rebuilding with logging:
    ```bash
-   mkdir -p tmp
+   LOG=1 make
    ```
-2. Make the helper script executable:
+2. Launch `xboard` (or any CECP client such as `cutechess-cli`) by pointing it directly at the engine binary:
    ```bash
-   chmod +x scripts/run_engine.sh
+   xboard -fcp "./program"
    ```
-3. Launch `xboard` with the engine:
+3. To persist `stderr` metrics, wrap the command so the shell redirects output for you:
    ```bash
-   xboard -fcp ./scripts/run_engine.sh &
-   tail -f tmp/engine.log
+   mkdir -p build/logs
+   xboard -fcp "./program 2>build/logs/engine.log" &
+   tail -f build/logs/engine.log
    ```
    Use XBoard to play, watch the log for custom `METRIC` entries, and stop with `fg` + Ctrl+C or `kill`.
 
@@ -72,10 +75,26 @@ python3 scripts/deep_labeler.py \
 
 Failures (timeouts, malformed FENs, etc.) are recorded in `build/deep_label_failures.log`.
 
+## Self-Play Games (NDJSON)
+`scripts/self_play_games.py` emits NDJSON that captures every ply plus zobrist keys, which is the preferred input for `scripts/opening_book_miner.py`.
+
+```bash
+python3 scripts/self_play_games.py \
+  --engine-cmd ./program \
+  --games 100 \
+  --max-plies 80 \
+  --move-time-ms 150 \
+  --depth 6 \
+  --output build/selfplay_games.jsonl
+```
+
+Set `--gzip` if you want compressed output; the JSON lines already include `ply_data` entries with zobrist keys so the miner can avoid replaying moves when possible.
+
 ## Additional Scripts
-- `scripts/blitz_gauntlet.sh`: run 1+0 gauntlet matches between engine builds (uses bundled `cutechess-cli` wrapper).
-- `scripts/run_engine.sh`: helper to boot the engine under XBoard/CECP (set +x and use `xboard -fcp ./scripts/run_engine.sh`).
-- `scripts/opening_book_miner.py`: mine NDJSON self-play for opening W/D/L stats over the first N plies, emitting a compact book map (`hex_key -> best_move`) plus detailed per-move counts (prefers precomputed `ply_data` entries with `zobrist_key`, otherwise replays plies through `./program`).
+- `scripts/blitz_gauntlet.sh`: run 1+0 gauntlet matches between engine builds (uses the bundled `cutechess-cli` wrapper if present).
+- `scripts/self_play_games.py`: produce NDJSON game records for downstream opening-book analytics.
+- `scripts/opening_book_miner.py`: mine NDJSON self-play for opening W/D/L stats over the first N plies, emitting a compact book map (`hex_key -> best_move`) plus detailed per-move counts (prefers `zobrist_key` in each `ply_data` entry, otherwise replays plies through `./program`).
+- `scripts/texel_tuner.py`: Texel logistic/centipawn regression that learns PST tables and small eval terms, outputting a header suitable for `src/core/gameTreeSearch/eval.cpp`.
 
 ## Tests
 - `python3 -m py_compile scripts/self_play_sampler.py scripts/deep_labeler.py` ensures the helpers parse.
