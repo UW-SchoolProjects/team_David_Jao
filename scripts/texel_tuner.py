@@ -381,19 +381,26 @@ def train_ridge(samples: List[Sample], args):
         y[i] = s.label - s.base
         for idx, val in s.features:
             X[i, idx] = val
-
-    xtx = X.T @ X
-    xty = X.T @ y
-
     # Objective in SGD form:
     #   (1/(2n)) * ||(Xw - y)/scale||^2 + (l2/2) * ||w||^2
     # => normal eq:
     #   (XᵀX + n*scale^2*l2 * I) w = Xᵀy
     lam = float(n) * (scale * scale) * float(args.l2)
-    if lam > 0:
-        xtx.flat[:: NUM_FEATURES + 1] += lam
+    if lam <= 0:
+        # With l2=0, XᵀX can be singular (unused/collinear features). Use SVD least-squares.
+        w, _, rank, _ = np.linalg.lstsq(X, y, rcond=None)
+        max_w = float(np.max(np.abs(w))) if w.size else 0.0
+        print(f"OLS solve: rank={rank}/{NUM_FEATURES} max|w|={max_w:.3f} (lambda={lam:.3f})")
+        return w.tolist()
 
-    w = np.linalg.solve(xtx, xty)
+    xtx = X.T @ X
+    xty = X.T @ y
+    xtx.flat[:: NUM_FEATURES + 1] += lam
+    try:
+        w = np.linalg.solve(xtx, xty)
+    except np.linalg.LinAlgError:
+        # Extremely ill-conditioned; fall back to least-squares on the normal equations.
+        w, *_ = np.linalg.lstsq(xtx, xty, rcond=None)
     max_w = float(np.max(np.abs(w))) if w.size else 0.0
     print(f"Ridge solve: max|w|={max_w:.3f} (lambda={lam:.3f})")
     return w.tolist()
