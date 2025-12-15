@@ -152,4 +152,8 @@ bool make_null(Board &b, NullUndo &u);
 // Undo a null move.
 void unmake_null(Board &b, const NullUndo &u);
 
+// Reset the global undo/history stack used by make_move()/unmake_move().
+// Call this when starting a new game or loading a fresh position via FEN.
+void reset_move_history();
+
 #endif // MOVE_APPLY_H

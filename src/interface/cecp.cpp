@@ -645,6 +645,7 @@ static Move search_best_move(EngineSession &sess) {
 // ---------------------------
 
 void init_engine_session(EngineSession &sess) {
+    reset_move_history();
     clear_board(sess.board);
     setup_startpos(sess.board);
     rebuild_bitboards(sess.board);
@@ -894,6 +895,7 @@ static void handle_setboard(EngineSession &sess, const std::string &fen) {
         return;
     }
 
+    reset_move_history();
     TT.clear();
     sess.side_to_move = sess.board.side;
     sess.mode = EngineMode::FORCE;

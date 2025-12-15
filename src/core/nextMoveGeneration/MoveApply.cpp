@@ -95,6 +95,10 @@ See LICENSE file for details.
 static UndoState history[MAX_PLY];
 static int ply = 0;
 
+void reset_move_history() {
+    ply = 0;
+}
+
 static inline void strip_castling_for_square(Board &b, int sq) {
     // White king and rooks
     if (sq == MAKE_SQUARE(4, 0)) b.castling &= ~(WKCA | WQCA); // e1 king
