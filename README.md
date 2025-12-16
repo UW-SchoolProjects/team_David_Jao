@@ -201,15 +201,3 @@ Each reference includes a hyperlink and a short explanation of how it influenced
 16. **“Understanding evaluation function” – Chess StackExchange**  
     https://chess.stackexchange.com/questions/6178/understanding-evaluation-function  
     Helped reinforce our understanding of classical evaluation components (material, PSTs, mobility) and why tuning them matters.
-
-
-### Optional / Background References  
-(Include only if actually used.)
-
-17. **Chess Engine, pt. 4: α–β pruning and better search – DogeyStamp**  
-    https://www.dogeystamp.com/chess4/  
-    Tutorial-style explanation of alpha–beta pruning; helpful during early search development.
-
-18. **“Which interface protocol should I implement for my chess engine?” – Chess StackExchange**  
-    https://chess.stackexchange.com/questions/6110/which-interface-protocol-should-i-implement-for-my-chess-engine  
-    Helped justify CECP as the required protocol and clarified differences from UCI.
