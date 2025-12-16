@@ -124,8 +124,6 @@ The following sources were consulted during the design and implementation of our
 Each reference includes a hyperlink and a short explanation of how it influenced the project.  
 *Accessed November 2025.*
 
----
-
 ### General Search & Engine Architecture
 
 1. **Alpha–Beta Algorithm – ChessProgramming.org**  
@@ -140,7 +138,6 @@ Each reference includes a hyperlink and a short explanation of how it influenced
    https://www.chessprogramming.org/Move_Ordering  
    Helped determine our move ordering strategy (TT move → captures → killers → history) to improve pruning efficiency.
 
----
 
 ### Hashing & Transposition Tables
 
@@ -152,7 +149,6 @@ Each reference includes a hyperlink and a short explanation of how it influenced
    https://www.chessprogramming.org/Albert_Zobrist  
    Provided practical explanations of how Zobrist hashing is used in modern chess engines and informed our TT implementation.
 
----
 
 ### Engine Communication Protocol (WinBoard / XBoard / CECP)
 
@@ -172,7 +168,6 @@ Each reference includes a hyperlink and a short explanation of how it influenced
    https://www.tim-mann.org/engines.html  
    Provided additional insights on implementing XBoard-compatible engines, especially feature negotiation and testing.
 
----
 
 ### Tutorial Engines / Code Examples
 
@@ -188,7 +183,6 @@ Each reference includes a hyperlink and a short explanation of how it influenced
     https://github.com/terredeciels/TSCP/blob/master/main.c  
     Examined for insight into how a small chess engine wires together its main loop and search driver (no code was copied).
 
----
 
 ### Evaluation & Tuning
 
@@ -208,7 +202,6 @@ Each reference includes a hyperlink and a short explanation of how it influenced
     https://chess.stackexchange.com/questions/6178/understanding-evaluation-function  
     Helped reinforce our understanding of classical evaluation components (material, PSTs, mobility) and why tuning them matters.
 
----
 
 ### Optional / Background References  
 (Include only if actually used.)
@@ -220,5 +213,3 @@ Each reference includes a hyperlink and a short explanation of how it influenced
 18. **“Which interface protocol should I implement for my chess engine?” – Chess StackExchange**  
     https://chess.stackexchange.com/questions/6110/which-interface-protocol-should-i-implement-for-my-chess-engine  
     Helped justify CECP as the required protocol and clarified differences from UCI.
-
----
