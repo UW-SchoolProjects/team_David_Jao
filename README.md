@@ -37,7 +37,7 @@ By default `make` now invokes `scripts/self_play_games.py` and `scripts/opening_
    ```bash
    xboard -fcp "./program"
    ```
-   The engine always runs under the forced-capture ruleset (captures are mandatory when available). When playing against a human or another engine, the opponent must also obey forced-capture or their quiet moves may be rejected as illegal.
+   The engine always *plays* under the forced-capture ruleset (captures are mandatory when available), but it will still accept any standard-legal opponent moves for XBoard compatibility.
 3. To persist `stderr` metrics, wrap the command so the shell redirects output for you:
    ```bash
    mkdir -p build/logs

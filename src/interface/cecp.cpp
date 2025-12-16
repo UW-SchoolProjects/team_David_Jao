@@ -116,7 +116,7 @@ See LICENSE file for details.
 // Small helpers
 // ---------------------------
 
-static constexpr const char kEngineName[] = "Team_David_Jao";
+static constexpr const char kEngineName[] = "Team_David_Jao (forced-capture)";
 
 #ifdef ENGINE_LOGGING
 static void log_msg(const std::string &msg) {
@@ -848,7 +848,10 @@ static void handle_go(EngineSession &sess) {
 static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
   log_msg("usermove " + mvStr);
   Move m;
-  if (!parse_uci_move(sess.board, mvStr, m, sess.forced_capture_variant)) {
+  // Accept any standard-legal move from the GUI/opponent to avoid desyncs when the
+  // opponent does not enforce the forced-capture ruleset. The engine will still
+  // generate its own moves under forced-capture rules.
+  if (!parse_uci_move(sess.board, mvStr, m, /*forced_capture_variant=*/false)) {
         log_msg("usermove rejected: not found in legal list");
         std::cout << "Illegal move: " << mvStr << "\n";
         return;
@@ -1057,6 +1060,16 @@ void cecp_main_loop(EngineSession &sess) {
         }
         else if (cmd == "david_fen") {
             std::cout << "fen " << dump_fen(sess.board) << "\n";
+            std::cout.flush();
+        }
+        else if (cmd == "david_config") {
+            std::cout << "config forced_capture=1 accept_opp_standard=1"
+                      << " mode=" << (sess.mode == EngineMode::PLAYING ? "playing" : "force")
+                      << " engine_side=" << (sess.engine_side == WHITE ? "w" : "b")
+                      << " stm=" << (sess.board.side == WHITE ? "w" : "b")
+                      << " sd=" << sess.max_depth
+                      << " stms=" << sess.time_per_move_ms
+                      << "\n";
             std::cout.flush();
         }
         else if (cmd == "david_lastscore") {
