@@ -113,5 +113,12 @@ constexpr int TUNED_BISHOP_PAIR = -31;
 constexpr int TUNED_TEMPO = 50;
 constexpr int TUNED_KING_PROX = 3;
 constexpr int TUNED_EVAL_BIAS = 50;
+constexpr int TUNED_PAWN_ADVANCE = 2;
+constexpr int TUNED_ISOLATED_PAWN = 0;
+constexpr int TUNED_DOUBLED_PAWN = 0;
+constexpr int TUNED_PASSED_PAWN = 0;
+constexpr int TUNED_ROOK_OPEN_FILE = 0;
+constexpr int TUNED_ROOK_SEMI_OPEN_FILE = 0;
+constexpr int TUNED_KING_SHIELD = 0;
 
 #endif // WEIGHTS_EVALUATED_H

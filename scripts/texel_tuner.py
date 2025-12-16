@@ -7,6 +7,7 @@ Takes the deep-labeled CSV from Task 5.2.2 and fits:
 - Bishop pair bonus.
 - Tempo bonus.
 - Optional endgame king-proximity term (aggression).
+- Simple pawn/rook/king-structure scalars (passed/isolated/doubled pawns, rook open files, king pawn shield, pawn advance).
 
 Outputs a C++ header with constexpr tables/constants ready to drop into eval.cpp.
 
@@ -70,7 +71,14 @@ IDX_BISHOP_PAIR = NUM_PST * 2
 IDX_TEMPO = NUM_PST * 2 + 1
 IDX_KING_PROX = NUM_PST * 2 + 2
 IDX_BIAS = NUM_PST * 2 + 3
-NUM_FEATURES = NUM_PST * 2 + 4
+IDX_PAWN_ADVANCE = NUM_PST * 2 + 4
+IDX_ISOLATED_PAWN = NUM_PST * 2 + 5
+IDX_DOUBLED_PAWN = NUM_PST * 2 + 6
+IDX_PASSED_PAWN = NUM_PST * 2 + 7
+IDX_ROOK_OPEN_FILE = NUM_PST * 2 + 8
+IDX_ROOK_SEMI_OPEN_FILE = NUM_PST * 2 + 9
+IDX_KING_SHIELD = NUM_PST * 2 + 10
+NUM_FEATURES = NUM_PST * 2 + 11
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +194,8 @@ def build_sample(fen: str, label_cp: int, objective: str, label_clamp: int) -> O
     white_bish = 0
     black_bish = 0
     king_sq = {"w": None, "b": None}
+    pawn_sq = {"w": [], "b": []}
+    rook_sq = {"w": [], "b": []}
 
     features: List[Tuple[int, float]] = []
 
@@ -220,6 +230,10 @@ def build_sample(fen: str, label_cp: int, objective: str, label_clamp: int) -> O
                 black_bish += 1
         if p == "K":
             king_sq[color] = idx
+        if p == "P":
+            pawn_sq[color].append(idx)
+        if p == "R":
+            rook_sq[color].append(idx)
 
     phase = max(0, min(PHASE_TOTAL, phase))
     mg_wt = phase / PHASE_TOTAL
@@ -252,6 +266,145 @@ def build_sample(fen: str, label_cp: int, objective: str, label_clamp: int) -> O
             # This term is applied in White POV then converted to side-to-move POV,
             # so it must be oriented by stm_sign here.
             scaled_features.append((IDX_KING_PROX, prox * eg_wt * stm_sign))
+
+    # Pawn/rook/king structure features (FEN-only; keep them as simple scalars).
+    # In eval.cpp these are added in White POV and then converted to STM POV,
+    # so we orient by stm_sign here.
+    if pawn_sq["w"] or pawn_sq["b"]:
+        wp_files = [0] * 8
+        bp_files = [0] * 8
+        wp_rank_mask = [0] * 8  # 8-bit mask of ranks containing a pawn on each file
+        bp_rank_mask = [0] * 8
+        for sq in pawn_sq["w"]:
+            f, r = sq % 8, sq // 8
+            wp_files[f] += 1
+            wp_rank_mask[f] |= 1 << r
+        for sq in pawn_sq["b"]:
+            f, r = sq % 8, sq // 8
+            bp_files[f] += 1
+            bp_rank_mask[f] |= 1 << r
+
+        # Pawn advancement: sum(rank) for white minus sum(7-rank) for black.
+        pawn_adv = sum((sq // 8) for sq in pawn_sq["w"]) - sum((7 - (sq // 8)) for sq in pawn_sq["b"])
+        if pawn_adv:
+            scaled_features.append((IDX_PAWN_ADVANCE, pawn_adv * stm_sign))
+
+        # Isolated pawns: no friendly pawn on adjacent files.
+        isolated_w = 0
+        for sq in pawn_sq["w"]:
+            f = sq % 8
+            left = (f > 0) and wp_files[f - 1] > 0
+            right = (f < 7) and wp_files[f + 1] > 0
+            if not left and not right:
+                isolated_w += 1
+        isolated_b = 0
+        for sq in pawn_sq["b"]:
+            f = sq % 8
+            left = (f > 0) and bp_files[f - 1] > 0
+            right = (f < 7) and bp_files[f + 1] > 0
+            if not left and not right:
+                isolated_b += 1
+        isolated_diff = isolated_b - isolated_w
+        if isolated_diff:
+            scaled_features.append((IDX_ISOLATED_PAWN, isolated_diff * stm_sign))
+
+        # Doubled pawns: extra pawns per file.
+        doubled_w = sum(max(0, c - 1) for c in wp_files)
+        doubled_b = sum(max(0, c - 1) for c in bp_files)
+        doubled_diff = doubled_b - doubled_w
+        if doubled_diff:
+            scaled_features.append((IDX_DOUBLED_PAWN, doubled_diff * stm_sign))
+
+        # Passed pawns: no enemy pawn on same/adjacent files ahead. EG-weighted.
+        passed_w_sum = 0
+        for sq in pawn_sq["w"]:
+            f, r = sq % 8, sq // 8
+            above = (~((1 << (r + 1)) - 1)) & 0xFF  # ranks > r
+            blocked = False
+            for ff in (f - 1, f, f + 1):
+                if 0 <= ff < 8 and (bp_rank_mask[ff] & above):
+                    blocked = True
+                    break
+            if not blocked:
+                passed_w_sum += r
+        passed_b_sum = 0
+        for sq in pawn_sq["b"]:
+            f, r = sq % 8, sq // 8
+            below = (1 << r) - 1  # ranks < r
+            blocked = False
+            for ff in (f - 1, f, f + 1):
+                if 0 <= ff < 8 and (wp_rank_mask[ff] & below):
+                    blocked = True
+                    break
+            if not blocked:
+                passed_b_sum += (7 - r)
+        passed_diff = passed_w_sum - passed_b_sum
+        if passed_diff:
+            scaled_features.append((IDX_PASSED_PAWN, passed_diff * eg_wt * stm_sign))
+
+        # Rook open/semi-open files (MG-weighted): requires pawn file counts.
+        if rook_sq["w"] or rook_sq["b"]:
+            open_w = semi_w = 0
+            for sq in rook_sq["w"]:
+                f = sq % 8
+                if wp_files[f] != 0:
+                    continue
+                if bp_files[f] == 0:
+                    open_w += 1
+                else:
+                    semi_w += 1
+            open_b = semi_b = 0
+            for sq in rook_sq["b"]:
+                f = sq % 8
+                if bp_files[f] != 0:
+                    continue
+                if wp_files[f] == 0:
+                    open_b += 1
+                else:
+                    semi_b += 1
+            open_diff = open_w - open_b
+            semi_diff = semi_w - semi_b
+            if open_diff:
+                scaled_features.append((IDX_ROOK_OPEN_FILE, open_diff * mg_wt * stm_sign))
+            if semi_diff:
+                scaled_features.append((IDX_ROOK_SEMI_OPEN_FILE, semi_diff * mg_wt * stm_sign))
+
+        # King pawn shield (MG-weighted): count friendly pawns on 1-2 ranks in front of king.
+        def king_shield(color_key: str) -> int:
+            k = king_sq.get(color_key)
+            if k is None:
+                return 0
+            f0, r0 = k % 8, k // 8
+            shield = 0
+            if color_key == "w":
+                for df in (-1, 0, 1):
+                    f = f0 + df
+                    if not (0 <= f < 8):
+                        continue
+                    for step in (1, 2):
+                        r = r0 + step
+                        if r >= 8:
+                            continue
+                        sq = r * 8 + f
+                        if squares[sq] == "P":
+                            shield += 1
+            else:
+                for df in (-1, 0, 1):
+                    f = f0 + df
+                    if not (0 <= f < 8):
+                        continue
+                    for step in (1, 2):
+                        r = r0 - step
+                        if r < 0:
+                            continue
+                        sq = r * 8 + f
+                        if squares[sq] == "p":
+                            shield += 1
+            return shield
+
+        shield_diff = king_shield("w") - king_shield("b")
+        if shield_diff:
+            scaled_features.append((IDX_KING_SHIELD, shield_diff * mg_wt * stm_sign))
 
     # Bias term
     scaled_features.append((IDX_BIAS, 1.0))
@@ -544,6 +697,16 @@ def clamp_for_emission(w, pst_clamp: float, small_clamp: float, tempo_clamp: flo
     w_out[IDX_KING_PROX] = float(clamp_and_round(w_out[IDX_KING_PROX], small_clamp))
     w_out[IDX_TEMPO] = float(clamp_and_round(w_out[IDX_TEMPO], tempo_clamp))
     w_out[IDX_BIAS] = float(clamp_and_round(w_out[IDX_BIAS], bias_clamp))
+    for idx in (
+        IDX_PAWN_ADVANCE,
+        IDX_ISOLATED_PAWN,
+        IDX_DOUBLED_PAWN,
+        IDX_PASSED_PAWN,
+        IDX_ROOK_OPEN_FILE,
+        IDX_ROOK_SEMI_OPEN_FILE,
+        IDX_KING_SHIELD,
+    ):
+        w_out[idx] = float(clamp_and_round(w_out[idx], small_clamp))
     return w_out
 
 
@@ -578,6 +741,13 @@ def emit_header(w, path: str, pst_clamp: float, small_clamp: float, tempo_clamp:
     tempo = clamp_and_round(w[IDX_TEMPO], tempo_clamp)
     king_prox = clamp_and_round(w[IDX_KING_PROX], small_clamp)
     bias = clamp_and_round(w[IDX_BIAS], bias_clamp)
+    pawn_adv = clamp_and_round(w[IDX_PAWN_ADVANCE], small_clamp)
+    iso = clamp_and_round(w[IDX_ISOLATED_PAWN], small_clamp)
+    doubled = clamp_and_round(w[IDX_DOUBLED_PAWN], small_clamp)
+    passed = clamp_and_round(w[IDX_PASSED_PAWN], small_clamp)
+    rook_open = clamp_and_round(w[IDX_ROOK_OPEN_FILE], small_clamp)
+    rook_semi = clamp_and_round(w[IDX_ROOK_SEMI_OPEN_FILE], small_clamp)
+    shield = clamp_and_round(w[IDX_KING_SHIELD], small_clamp)
 
     def fmt_table(table):
         lines = []
@@ -610,6 +780,13 @@ constexpr int TUNED_BISHOP_PAIR = {bp};
 constexpr int TUNED_TEMPO = {tempo};
 constexpr int TUNED_KING_PROX = {king_prox};
 constexpr int TUNED_EVAL_BIAS = {bias};
+constexpr int TUNED_PAWN_ADVANCE = {pawn_adv};
+constexpr int TUNED_ISOLATED_PAWN = {iso};
+constexpr int TUNED_DOUBLED_PAWN = {doubled};
+constexpr int TUNED_PASSED_PAWN = {passed};
+constexpr int TUNED_ROOK_OPEN_FILE = {rook_open};
+constexpr int TUNED_ROOK_SEMI_OPEN_FILE = {rook_semi};
+constexpr int TUNED_KING_SHIELD = {shield};
 
 #endif // {guard}
 """
@@ -623,7 +800,7 @@ constexpr int TUNED_EVAL_BIAS = {bias};
 # ---------------------------------------------------------------------------
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Texel logistic tuner for PST/bishop pair/tempo.")
+    p = argparse.ArgumentParser(description="Texel tuner for PST and small eval scalars.")
     p.add_argument("--input", default="build/deep_labeled_positions.csv.gz", help="Input CSV (.gz ok) from deep_labeler.")
     p.add_argument("--output-header", default="src/core/gameTreeSearch/weights_evaluated.h", help="Header path to write tuned weights.")
     p.add_argument("--holdout", type=float, default=0.2, help="Fraction of data for validation.")
@@ -653,7 +830,12 @@ def parse_args():
     p.add_argument("--logistic-scale", type=float, default=400.0, help="Scale for Texel logistic loss.")
     p.add_argument("--mse-scale", type=float, default=50.0, help="Normalization for cp MSE (objective=cp).")
     p.add_argument("--pst-clamp", type=float, default=200.0, help="Clamp for PST weights.")
-    p.add_argument("--small-clamp", type=float, default=50.0, help="Clamp for bishop pair / king proximity.")
+    p.add_argument(
+        "--small-clamp",
+        type=float,
+        default=50.0,
+        help="Clamp for small scalar terms (bishop pair/king prox/pawn structure/rook files/king shield).",
+    )
     p.add_argument("--tempo-clamp", type=float, default=50.0, help="Clamp for tempo bonus.")
     p.add_argument("--bias-clamp", type=float, default=50.0, help="Clamp for eval bias.")
     p.add_argument("--objective", choices=("sign", "cp"), default="cp", help="Training objective: sign-classification or cp-regression.")

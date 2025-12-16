@@ -143,16 +143,40 @@ static constexpr int DEFAULT_BISHOP_PAIR_BONUS = 30;
 // Tempo bonus (side to move)
 static constexpr int DEFAULT_TEMPO_BONUS = 10;
 
+// Additional (tunable) eval terms. Defaults are conservative to avoid changing
+// playing strength before re-tuning.
+static constexpr int DEFAULT_PAWN_ADVANCE_BONUS = 2;       // cp per rank advanced (per pawn)
+static constexpr int DEFAULT_ISOLATED_PAWN_PENALTY = 0;    // cp per isolated pawn
+static constexpr int DEFAULT_DOUBLED_PAWN_PENALTY = 0;     // cp per extra pawn on a file
+static constexpr int DEFAULT_PASSED_PAWN_BONUS = 0;        // cp per passed-pawn rank (endgame-weighted)
+static constexpr int DEFAULT_ROOK_OPEN_FILE_BONUS = 0;     // cp per rook on open file (mg-weighted)
+static constexpr int DEFAULT_ROOK_SEMI_OPEN_FILE_BONUS = 0;// cp per rook on semi-open file (mg-weighted)
+static constexpr int DEFAULT_KING_SHIELD_BONUS = 0;        // cp per pawn in king shield (mg-weighted)
+
 #if HAVE_TUNED_WEIGHTS
 static constexpr int BISHOP_PAIR_BONUS = TUNED_BISHOP_PAIR;
 static constexpr int TEMPO_BONUS = TUNED_TEMPO;
 static constexpr int KING_PROX_BONUS = TUNED_KING_PROX;
 static constexpr int EVAL_BIAS = TUNED_EVAL_BIAS;
+static constexpr int PAWN_ADVANCE_BONUS = TUNED_PAWN_ADVANCE;
+static constexpr int ISOLATED_PAWN_PENALTY = TUNED_ISOLATED_PAWN;
+static constexpr int DOUBLED_PAWN_PENALTY = TUNED_DOUBLED_PAWN;
+static constexpr int PASSED_PAWN_BONUS = TUNED_PASSED_PAWN;
+static constexpr int ROOK_OPEN_FILE_BONUS = TUNED_ROOK_OPEN_FILE;
+static constexpr int ROOK_SEMI_OPEN_FILE_BONUS = TUNED_ROOK_SEMI_OPEN_FILE;
+static constexpr int KING_SHIELD_BONUS = TUNED_KING_SHIELD;
 #else
 static constexpr int BISHOP_PAIR_BONUS = DEFAULT_BISHOP_PAIR_BONUS;
 static constexpr int TEMPO_BONUS = DEFAULT_TEMPO_BONUS;
 static constexpr int KING_PROX_BONUS = 0;
 static constexpr int EVAL_BIAS = 0;
+static constexpr int PAWN_ADVANCE_BONUS = DEFAULT_PAWN_ADVANCE_BONUS;
+static constexpr int ISOLATED_PAWN_PENALTY = DEFAULT_ISOLATED_PAWN_PENALTY;
+static constexpr int DOUBLED_PAWN_PENALTY = DEFAULT_DOUBLED_PAWN_PENALTY;
+static constexpr int PASSED_PAWN_BONUS = DEFAULT_PASSED_PAWN_BONUS;
+static constexpr int ROOK_OPEN_FILE_BONUS = DEFAULT_ROOK_OPEN_FILE_BONUS;
+static constexpr int ROOK_SEMI_OPEN_FILE_BONUS = DEFAULT_ROOK_SEMI_OPEN_FILE_BONUS;
+static constexpr int KING_SHIELD_BONUS = DEFAULT_KING_SHIELD_BONUS;
 #endif
 
 // Phase weights: how much each piece contributes to "middlegame-ness".
@@ -364,6 +388,13 @@ static_assert(TUNED_BISHOP_PAIR >= -50 && TUNED_BISHOP_PAIR <= 50, "TUNED_BISHOP
 static_assert(TUNED_TEMPO >= -50 && TUNED_TEMPO <= 50, "TUNED_TEMPO out of clamp");
 static_assert(TUNED_KING_PROX >= -50 && TUNED_KING_PROX <= 50, "TUNED_KING_PROX out of clamp");
 static_assert(TUNED_EVAL_BIAS >= -50 && TUNED_EVAL_BIAS <= 50, "TUNED_EVAL_BIAS out of clamp");
+static_assert(TUNED_PAWN_ADVANCE >= -50 && TUNED_PAWN_ADVANCE <= 50, "TUNED_PAWN_ADVANCE out of clamp");
+static_assert(TUNED_ISOLATED_PAWN >= -50 && TUNED_ISOLATED_PAWN <= 50, "TUNED_ISOLATED_PAWN out of clamp");
+static_assert(TUNED_DOUBLED_PAWN >= -50 && TUNED_DOUBLED_PAWN <= 50, "TUNED_DOUBLED_PAWN out of clamp");
+static_assert(TUNED_PASSED_PAWN >= -50 && TUNED_PASSED_PAWN <= 50, "TUNED_PASSED_PAWN out of clamp");
+static_assert(TUNED_ROOK_OPEN_FILE >= -50 && TUNED_ROOK_OPEN_FILE <= 50, "TUNED_ROOK_OPEN_FILE out of clamp");
+static_assert(TUNED_ROOK_SEMI_OPEN_FILE >= -50 && TUNED_ROOK_SEMI_OPEN_FILE <= 50, "TUNED_ROOK_SEMI_OPEN_FILE out of clamp");
+static_assert(TUNED_KING_SHIELD >= -50 && TUNED_KING_SHIELD <= 50, "TUNED_KING_SHIELD out of clamp");
 #else
 static const int (&MG_PST)[7][64] = DEFAULT_MG_PST;
 static const int (&EG_PST)[7][64] = DEFAULT_EG_PST;
@@ -1159,16 +1190,231 @@ int basicEvaluate(const Board &board)
     }
   }
 
-  // Encourage advancing pawns toward promotion (White POV).
+  // ---------------------------------------------------------------------------
+  // Pawn structure / file-based (tunable) terms (White POV)
+  // ---------------------------------------------------------------------------
+  if (ISOLATED_PAWN_PENALTY != 0 || DOUBLED_PAWN_PENALTY != 0 || PASSED_PAWN_BONUS != 0 ||
+      ROOK_OPEN_FILE_BONUS != 0 || ROOK_SEMI_OPEN_FILE_BONUS != 0 || KING_SHIELD_BONUS != 0)
   {
+    int pawnFileCount[2][8] = {{0}};
+    {
+      uint64_t wp = bb_of(board, WPAWN);
+      while (wp)
+      {
+        uint64_t lsb = wp & -wp;
+        int sq = __builtin_ctzll(lsb);
+        wp ^= lsb;
+        pawnFileCount[WHITE][sq & 7]++;
+      }
+      uint64_t bp = bb_of(board, BPAWN);
+      while (bp)
+      {
+        uint64_t lsb = bp & -bp;
+        int sq = __builtin_ctzll(lsb);
+        bp ^= lsb;
+        pawnFileCount[BLACK][sq & 7]++;
+      }
+    }
+
+    if (ISOLATED_PAWN_PENALTY != 0)
+    {
+      int isolated[2] = {0, 0};
+      uint64_t wp = bb_of(board, WPAWN);
+      while (wp)
+      {
+        uint64_t lsb = wp & -wp;
+        int sq = __builtin_ctzll(lsb);
+        wp ^= lsb;
+        int f = sq & 7;
+        bool left = (f > 0) && pawnFileCount[WHITE][f - 1] > 0;
+        bool right = (f < 7) && pawnFileCount[WHITE][f + 1] > 0;
+        if (!left && !right)
+          isolated[WHITE]++;
+      }
+      uint64_t bp = bb_of(board, BPAWN);
+      while (bp)
+      {
+        uint64_t lsb = bp & -bp;
+        int sq = __builtin_ctzll(lsb);
+        bp ^= lsb;
+        int f = sq & 7;
+        bool left = (f > 0) && pawnFileCount[BLACK][f - 1] > 0;
+        bool right = (f < 7) && pawnFileCount[BLACK][f + 1] > 0;
+        if (!left && !right)
+          isolated[BLACK]++;
+      }
+      int diff = isolated[BLACK] - isolated[WHITE];
+      if (diff)
+        scoreWhite += diff * ISOLATED_PAWN_PENALTY;
+    }
+
+    if (DOUBLED_PAWN_PENALTY != 0)
+    {
+      int doubled[2] = {0, 0};
+      for (int f = 0; f < 8; ++f)
+      {
+        doubled[WHITE] += std::max(0, pawnFileCount[WHITE][f] - 1);
+        doubled[BLACK] += std::max(0, pawnFileCount[BLACK][f] - 1);
+      }
+      int diff = doubled[BLACK] - doubled[WHITE];
+      if (diff)
+        scoreWhite += diff * DOUBLED_PAWN_PENALTY;
+    }
+
+    if (PASSED_PAWN_BONUS != 0)
+    {
+      static constexpr uint64_t FILE_MASK[8] = {
+          0x0101010101010101ULL,
+          0x0202020202020202ULL,
+          0x0404040404040404ULL,
+          0x0808080808080808ULL,
+          0x1010101010101010ULL,
+          0x2020202020202020ULL,
+          0x4040404040404040ULL,
+          0x8080808080808080ULL,
+      };
+
+      auto ranks_above = [](int rank) -> uint64_t {
+        if (rank >= 7)
+          return 0ULL;
+        return 0xFFFFFFFFFFFFFFFFULL << ((rank + 1) * 8);
+      };
+      auto ranks_below = [](int rank) -> uint64_t {
+        if (rank <= 0)
+          return 0ULL;
+        return (1ULL << (rank * 8)) - 1ULL;
+      };
+
+      int passedSum[2] = {0, 0};
+      uint64_t wp = bb_of(board, WPAWN);
+      uint64_t bp = bb_of(board, BPAWN);
+      uint64_t bpAll = bp;
+      uint64_t wpAll = wp;
+
+      while (wp)
+      {
+        uint64_t lsb = wp & -wp;
+        int sq = __builtin_ctzll(lsb);
+        wp ^= lsb;
+        int f = sq & 7;
+        int r = sq >> 3;
+        uint64_t files = FILE_MASK[f];
+        if (f > 0)
+          files |= FILE_MASK[f - 1];
+        if (f < 7)
+          files |= FILE_MASK[f + 1];
+        uint64_t mask = files & ranks_above(r);
+        if ((bpAll & mask) == 0ULL)
+          passedSum[WHITE] += r;
+      }
+      while (bp)
+      {
+        uint64_t lsb = bp & -bp;
+        int sq = __builtin_ctzll(lsb);
+        bp ^= lsb;
+        int f = sq & 7;
+        int r = sq >> 3;
+        uint64_t files = FILE_MASK[f];
+        if (f > 0)
+          files |= FILE_MASK[f - 1];
+        if (f < 7)
+          files |= FILE_MASK[f + 1];
+        uint64_t mask = files & ranks_below(r);
+        if ((wpAll & mask) == 0ULL)
+          passedSum[BLACK] += (7 - r);
+      }
+
+      int diff = passedSum[WHITE] - passedSum[BLACK];
+      if (diff)
+      {
+        int egFactor = PHASE_TOTAL - phase;
+        scoreWhite += (diff * PASSED_PAWN_BONUS * egFactor) / std::max(1, PHASE_TOTAL);
+      }
+    }
+
+    if (ROOK_OPEN_FILE_BONUS != 0 || ROOK_SEMI_OPEN_FILE_BONUS != 0)
+    {
+      int openRooks[2] = {0, 0};
+      int semiRooks[2] = {0, 0};
+      for (int s = 0; s < 2; ++s)
+      {
+        Side side = static_cast<Side>(s);
+        Side other = (side == WHITE ? BLACK : WHITE);
+        uint64_t rooks = bb_of(board, (static_cast<int>(side) << 3) | ROOK);
+        while (rooks)
+        {
+          uint64_t lsb = rooks & -rooks;
+          int sq = __builtin_ctzll(lsb);
+          rooks ^= lsb;
+          int f = sq & 7;
+          if (pawnFileCount[side][f] != 0)
+            continue;
+          if (pawnFileCount[other][f] == 0)
+            openRooks[side]++;
+          else
+            semiRooks[side]++;
+        }
+      }
+
+      int openDiff = openRooks[WHITE] - openRooks[BLACK];
+      int semiDiff = semiRooks[WHITE] - semiRooks[BLACK];
+      if (openDiff || semiDiff)
+      {
+        int mgFactor = phase;
+        int term = openDiff * ROOK_OPEN_FILE_BONUS + semiDiff * ROOK_SEMI_OPEN_FILE_BONUS;
+        scoreWhite += (term * mgFactor) / std::max(1, PHASE_TOTAL);
+      }
+    }
+
+    if (KING_SHIELD_BONUS != 0 && kingSq[WHITE] != -1 && kingSq[BLACK] != -1)
+    {
+      auto pawn_shield = [&](Side side) -> int {
+        int ksq = kingSq[side];
+        if (ksq < 0)
+          return 0;
+        int f0 = ksq & 7;
+        int r0 = ksq >> 3;
+        int dir = (side == WHITE ? 1 : -1);
+        uint64_t pawns = bb_of(board, (static_cast<int>(side) << 3) | PAWN);
+        int shield = 0;
+        for (int df = -1; df <= 1; ++df)
+        {
+          int f = f0 + df;
+          if (f < 0 || f > 7)
+            continue;
+          for (int step = 1; step <= 2; ++step)
+          {
+            int r = r0 + dir * step;
+            if (r < 0 || r > 7)
+              continue;
+            int sq = (r << 3) | f;
+            if (pawns & (1ULL << sq))
+              ++shield;
+          }
+        }
+        return shield;
+      };
+
+      int shieldDiff = pawn_shield(WHITE) - pawn_shield(BLACK);
+      if (shieldDiff)
+      {
+        int mgFactor = phase;
+        scoreWhite += (shieldDiff * KING_SHIELD_BONUS * mgFactor) / std::max(1, PHASE_TOTAL);
+      }
+    }
+  }
+
+  // Encourage advancing pawns toward promotion (White POV).
+  if (PAWN_ADVANCE_BONUS != 0)
+  {
+    int pawnAdvanceDiff = 0;
     uint64_t wp = bb_of(board, WPAWN);
     while (wp)
     {
       uint64_t lsb = wp & -wp;
       int sq = __builtin_ctzll(lsb);
       wp ^= lsb;
-      int rank = sq >> 3;
-      scoreWhite += rank * 2; // small bonus per rank advanced
+      pawnAdvanceDiff += (sq >> 3);
     }
     uint64_t bp = bb_of(board, BPAWN);
     while (bp)
@@ -1176,9 +1422,10 @@ int basicEvaluate(const Board &board)
       uint64_t lsb = bp & -bp;
       int sq = __builtin_ctzll(lsb);
       bp ^= lsb;
-      int rankFromWhite = 7 - (sq >> 3);
-      scoreWhite -= rankFromWhite * 2;
+      pawnAdvanceDiff -= (7 - (sq >> 3));
     }
+    if (pawnAdvanceDiff)
+      scoreWhite += pawnAdvanceDiff * PAWN_ADVANCE_BONUS;
   }
 
   // --- 50-move proximity penalty (apply in side-to-move POV) ---
