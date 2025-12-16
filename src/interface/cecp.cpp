@@ -135,10 +135,15 @@ static inline void log_msg(const std::string &) {}
 static inline void log_board_fen(const Board &, const char * = nullptr) {}
 #endif
 
-// Unconditional diagnostic logging to stderr (safe for protocol).
+// Diagnostic logging to stderr (safe for protocol), gated to avoid blocking when
+// stderr is piped but not drained by the caller.
+#ifdef ENGINE_LOGGING
 static inline void diag_log(const std::string &msg) {
     std::cerr << "[diag] " << msg << std::endl;
 }
+#else
+static inline void diag_log(const std::string &) {}
+#endif
 
 static void skip_whitespace(const std::string &s, size_t &pos) {
     while (pos < s.size() && std::isspace(static_cast<unsigned char>(s[pos]))) ++pos;

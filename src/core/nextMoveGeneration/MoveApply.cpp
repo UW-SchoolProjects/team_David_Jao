@@ -128,28 +128,18 @@ bool make_move(Board &b, const Move &m) {
     int moved = b.squares[from];
     assert(moved != EMPTY);
 
+    // Reject moves that try to move the wrong color.
+    // Must happen before we push an undo record, otherwise early rollback reads
+    // uninitialized UndoState fields and corrupts board state.
+    if (color_of(moved) != b.side) {
+        return false;
+    }
+
     Side us   = static_cast<Side>(b.side);
     Side them = (us == WHITE ? BLACK : WHITE);
 
     // --- 1) Push undo state ---
     UndoState &st = history[ply++];
-
-    auto rollback_and_fail = [&](UndoState &u) {
-        // Restore scalar state in case we bail out early (e.g., bogus EP).
-        b.castling        = u.old_castling;
-        b.ep_square       = u.old_ep_square;
-        b.halfmove_clock  = u.old_halfmove_clock;
-        b.fullmove_number = u.old_fullmove_number;
-        b.side            = u.old_side;
-        b.zobrist_key     = u.old_zobrist_key;
-        --ply;
-        return false;
-    };
-
-    // Reject moves that try to move the wrong color.
-    if (color_of(moved) != b.side) {
-        return rollback_and_fail(st);
-    }
 
     st.move                = m;
     st.moved_piece_full    = moved;      // MUST be the original piece (pawn for promotions)
@@ -160,6 +150,18 @@ bool make_move(Board &b, const Move &m) {
     st.old_fullmove_number = b.fullmove_number;
     st.old_side            = static_cast<Side>(b.side);
     st.old_zobrist_key     = b.zobrist_key;
+
+    auto rollback_and_fail = [&]() {
+        // Restore scalar state in case we bail out early (e.g., bogus EP).
+        b.castling        = st.old_castling;
+        b.ep_square       = st.old_ep_square;
+        b.halfmove_clock  = st.old_halfmove_clock;
+        b.fullmove_number = st.old_fullmove_number;
+        b.side            = st.old_side;
+        b.zobrist_key     = st.old_zobrist_key;
+        --ply;
+        return false;
+    };
 
     // --- 2) Update clocks ---
     int new_halfmove_clock = st.old_halfmove_clock;
@@ -204,7 +206,7 @@ bool make_move(Board &b, const Move &m) {
 
         // Defensive guard: invalid EP flag -> reject move instead of crashing.
         if (b.squares[cap_sq] != victim) {
-            return rollback_and_fail(st);
+            return rollback_and_fail();
         }
 
         b.squares[cap_sq] = EMPTY;

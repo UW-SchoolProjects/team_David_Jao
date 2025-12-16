@@ -105,9 +105,15 @@ static inline void log_msg(const std::string &msg) {
 }
 #endif
 
+// Diagnostic logging to stderr (safe for protocol), gated to avoid blocking when
+// stderr is piped but not drained by the caller.
+#ifdef ENGINE_LOGGING
 static inline void diag_log_search(const std::string &msg) {
   std::cerr << "[diag-search] " << msg << std::endl;
 }
+#else
+static inline void diag_log_search(const std::string &) {}
+#endif
 
 // Simple material draw detector (insufficient material).
 bool isInsufficientMaterial(const Board &b)
