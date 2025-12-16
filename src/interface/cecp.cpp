@@ -116,7 +116,7 @@ See LICENSE file for details.
 // Small helpers
 // ---------------------------
 
-static constexpr const char kEngineName[] = "Team_David_Jao";
+static constexpr const char kEngineName[] = "Team_David_Jao (forced-capture)";
 
 #ifdef ENGINE_LOGGING
 static void log_msg(const std::string &msg) {
