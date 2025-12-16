@@ -26,6 +26,8 @@ This repo hosts the `Team_David_Jao` chess engine plus helper scripts for Epic 5
    ```
    This emits `./program`, a CECP-compatible binary that automatically registers the `david_*` helpers.
 
+NOTE: Please remove weight_evaluated.h before building by running "rm src/core/gameTreeSearch/weights_evaluated.h" at root directory.
+
 By default `make` now invokes `scripts/self_play_games.py` and `scripts/opening_book_miner.py` after linking so `build/selfplay_games.jsonl`, `build/opening_book_map.json`, and the accompanying stats/logs are regenerated whenever the binary changes. Override `PYTHON`/`SELFPLAY_GAMES`/`OPENING_BOOK_MAP` etc. if you need different paths or tuning parameters, or set `SKIP_POST_BUILD=1` to skip the post-build pipeline during quick iterations.
 
 ### Running with XBoard
