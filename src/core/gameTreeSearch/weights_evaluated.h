@@ -114,4 +114,56 @@ constexpr int TUNED_TEMPO = 50;
 constexpr int TUNED_KING_PROX = 3;
 constexpr int TUNED_EVAL_BIAS = 50;
 
+// ---------------------------------------------------------------------------
+// Extra tunables (defaults match eval.cpp)
+// ---------------------------------------------------------------------------
+
+constexpr int TUNED_MG_PIECE_VALUE[7] = {0, 100, 330, 500, 550, 1500, 0};
+constexpr int TUNED_EG_PIECE_VALUE[7] = {0, 100, 300, 330, 500, 950, 0};
+
+constexpr int TUNED_CENTER_MG_WEIGHT[7] = {0, 6, -2, -3, -3, -5, 0};
+constexpr int TUNED_CENTER_EG_WEIGHT[7] = {0, 2, 2, 3, 3, 4, 6};
+
+constexpr int TUNED_KING_PROX_DIST_BASE = 10;
+
+constexpr int TUNED_TRADE_RISK_SCALE_PCT = 70;
+
+constexpr int TUNED_MK_BONUS_MAX = 100;
+constexpr int TUNED_MK_TARGET = 8;
+constexpr int TUNED_MK_MISSING_SQUARE_WEIGHT = 12;
+constexpr int TUNED_MK_IN_CHECK_SCALE_PCT = 50;
+
+constexpr int TUNED_CONSTRAINT_BASE = 220;
+constexpr int TUNED_CONSTRAINT_CAP = 70;
+constexpr int TUNED_CONSTRAINT_TRIGGER_MK_MAX = 1;
+constexpr int TUNED_RICHNESS_BASE_MAX = 120;
+constexpr int TUNED_RICHNESS_MIN = 20;
+constexpr int TUNED_RICHNESS_PIECES_CAP = 30;
+constexpr int TUNED_RICHNESS_PIECE_PENALTY = 3;
+
+constexpr int TUNED_TRADE_ATTACKER_NEG_SEE_DIV = 5;
+constexpr int TUNED_TRADE_QUEEN_PAWN_PENALTY = 20;
+constexpr int TUNED_TRADE_SMALL_VICTIM_DIV = 2;
+constexpr int TUNED_TRADE_ATTACKER_SMALL_VICTIM_DIV = 6;
+
+constexpr int TUNED_MOBILITY_RISKY_CAP_WEIGHT = 3;
+constexpr int TUNED_MOBILITY_SAFE_CAP_WEIGHT = 8;
+
+constexpr int TUNED_KING_ATTACK_OPP_NONKING_MAX = 1;
+constexpr int TUNED_KING_ATTACK_ACTIVITY_DIST_BASE = 10;
+constexpr int TUNED_KING_ATTACK_ACTIVITY_WEIGHT = 8;
+constexpr int TUNED_KING_ATTACK_ATTACKER_PULL_DIST_BASE = 14;
+constexpr int TUNED_KING_ATTACK_ATTACKER_PULL_WEIGHT = 2;
+constexpr int TUNED_KING_ATTACK_BOOSTED_MK_DIV = 2;
+
+constexpr int TUNED_KING_AGGRESSION_MAT_DIFF_THRESHOLD = 400;
+constexpr int TUNED_KING_AGGRESSION_PHASE_MARGIN = 2;
+constexpr int TUNED_KING_AGGRESSION_DIST_BASE = 12;
+constexpr int TUNED_KING_AGGRESSION_WEIGHT = 6;
+
+constexpr int TUNED_PAWN_ADVANCE_RANK_WEIGHT = 2;
+
+constexpr int TUNED_FIFTY_MOVE_THRESHOLD = 60;
+constexpr int TUNED_FIFTY_MOVE_PENALTY_PER_PLY = 3;
+
 #endif // WEIGHTS_EVALUATED_H

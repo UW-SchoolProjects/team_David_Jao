@@ -20,6 +20,7 @@ Notes:
 import argparse
 import csv
 import gzip
+import json
 import math
 import os
 import random
@@ -70,6 +71,80 @@ IDX_TEMPO = NUM_PST * 2 + 1
 IDX_KING_PROX = NUM_PST * 2 + 2
 IDX_BIAS = NUM_PST * 2 + 3
 NUM_FEATURES = NUM_PST * 2 + 4
+
+
+# ---------------------------------------------------------------------------
+# Extra eval tunables (emitted into weights_evaluated.h)
+# ---------------------------------------------------------------------------
+
+def default_extra_params():
+    # These are not optimized by this script yet; they are emitted so the C++
+    # eval can be tuned from a single generated header.
+    return {
+        "TUNED_MG_PIECE_VALUE": [0, MG_PIECE_VALUE["P"], MG_PIECE_VALUE["N"], MG_PIECE_VALUE["B"], MG_PIECE_VALUE["R"], MG_PIECE_VALUE["Q"], MG_PIECE_VALUE["K"]],
+        "TUNED_EG_PIECE_VALUE": [0, EG_PIECE_VALUE["P"], EG_PIECE_VALUE["N"], EG_PIECE_VALUE["B"], EG_PIECE_VALUE["R"], EG_PIECE_VALUE["Q"], EG_PIECE_VALUE["K"]],
+        "TUNED_CENTER_MG_WEIGHT": [0, 6, -2, -3, -3, -5, 0],
+        "TUNED_CENTER_EG_WEIGHT": [0, 2, 2, 3, 3, 4, 6],
+        "TUNED_KING_PROX_DIST_BASE": 10,
+        "TUNED_TRADE_RISK_SCALE_PCT": 70,
+        "TUNED_MK_BONUS_MAX": 100,
+        "TUNED_MK_TARGET": 8,
+        "TUNED_MK_MISSING_SQUARE_WEIGHT": 12,
+        "TUNED_MK_IN_CHECK_SCALE_PCT": 50,
+        "TUNED_CONSTRAINT_BASE": 220,
+        "TUNED_CONSTRAINT_CAP": 70,
+        "TUNED_CONSTRAINT_TRIGGER_MK_MAX": 1,
+        "TUNED_RICHNESS_BASE_MAX": 120,
+        "TUNED_RICHNESS_MIN": 20,
+        "TUNED_RICHNESS_PIECES_CAP": 30,
+        "TUNED_RICHNESS_PIECE_PENALTY": 3,
+        "TUNED_TRADE_ATTACKER_NEG_SEE_DIV": 5,
+        "TUNED_TRADE_QUEEN_PAWN_PENALTY": 20,
+        "TUNED_TRADE_SMALL_VICTIM_DIV": 2,
+        "TUNED_TRADE_ATTACKER_SMALL_VICTIM_DIV": 6,
+        "TUNED_MOBILITY_RISKY_CAP_WEIGHT": 3,
+        "TUNED_MOBILITY_SAFE_CAP_WEIGHT": 8,
+        "TUNED_KING_ATTACK_OPP_NONKING_MAX": 1,
+        "TUNED_KING_ATTACK_ACTIVITY_DIST_BASE": 10,
+        "TUNED_KING_ATTACK_ACTIVITY_WEIGHT": 8,
+        "TUNED_KING_ATTACK_ATTACKER_PULL_DIST_BASE": 14,
+        "TUNED_KING_ATTACK_ATTACKER_PULL_WEIGHT": 2,
+        "TUNED_KING_ATTACK_BOOSTED_MK_DIV": 2,
+        "TUNED_KING_AGGRESSION_MAT_DIFF_THRESHOLD": 400,
+        "TUNED_KING_AGGRESSION_PHASE_MARGIN": 2,
+        "TUNED_KING_AGGRESSION_DIST_BASE": 12,
+        "TUNED_KING_AGGRESSION_WEIGHT": 6,
+        "TUNED_PAWN_ADVANCE_RANK_WEIGHT": 2,
+        "TUNED_FIFTY_MOVE_THRESHOLD": 60,
+        "TUNED_FIFTY_MOVE_PENALTY_PER_PLY": 3,
+    }
+
+
+def load_extra_params_json(path: str):
+    if not path:
+        return {}
+    with open(path, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+    if not isinstance(data, dict):
+        raise ValueError("--extra-params-json must contain a JSON object/dict at the top level.")
+    return data
+
+
+def merge_extra_params(defaults: dict, overrides: dict):
+    merged = dict(defaults)
+    for raw_key, raw_val in overrides.items():
+        key = raw_key if raw_key.startswith("TUNED_") else f"TUNED_{raw_key}"
+        if key not in defaults:
+            print(f"Warning: ignoring unknown extra param: {raw_key}")
+            continue
+        default_val = defaults[key]
+        if isinstance(default_val, list):
+            if not isinstance(raw_val, list) or len(raw_val) != len(default_val):
+                raise ValueError(f"{raw_key} must be a list of length {len(default_val)}.")
+            merged[key] = [int(x) for x in raw_val]
+        else:
+            merged[key] = int(raw_val)
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -466,9 +541,13 @@ def clamp_for_emission(w, pst_clamp: float, small_clamp: float, tempo_clamp: flo
     return w_out
 
 
-def emit_header(w, path: str, pst_clamp: float, small_clamp: float, tempo_clamp: float, bias_clamp: float):
+def emit_header(w, path: str, pst_clamp: float, small_clamp: float, tempo_clamp: float, bias_clamp: float, extra_params: dict):
     if len(w) < NUM_FEATURES:
         raise ValueError(f"Weight vector too small: got {len(w)}, expected >= {NUM_FEATURES}")
+    required_extras = default_extra_params()
+    missing = [k for k in required_extras.keys() if k not in extra_params]
+    if missing:
+        raise ValueError(f"Missing extra params for header emission: {missing}")
     dirpath = os.path.dirname(os.path.abspath(path))
     if dirpath:
         os.makedirs(dirpath, exist_ok=True)
@@ -507,6 +586,64 @@ def emit_header(w, path: str, pst_clamp: float, small_clamp: float, tempo_clamp:
             lines.append("    {" + ",\n     ".join(rows) + "}")
         return ",\n".join(lines)
 
+    def fmt_arr(values):
+        return ", ".join(str(int(v)) for v in values)
+
+    extra = extra_params
+    extra_section = f"""// ---------------------------------------------------------------------------
+// Extra tunables (defaults match eval.cpp)
+// ---------------------------------------------------------------------------
+
+constexpr int TUNED_MG_PIECE_VALUE[7] = {{{fmt_arr(extra["TUNED_MG_PIECE_VALUE"])}}};
+constexpr int TUNED_EG_PIECE_VALUE[7] = {{{fmt_arr(extra["TUNED_EG_PIECE_VALUE"])}}};
+
+constexpr int TUNED_CENTER_MG_WEIGHT[7] = {{{fmt_arr(extra["TUNED_CENTER_MG_WEIGHT"])}}};
+constexpr int TUNED_CENTER_EG_WEIGHT[7] = {{{fmt_arr(extra["TUNED_CENTER_EG_WEIGHT"])}}};
+
+constexpr int TUNED_KING_PROX_DIST_BASE = {int(extra["TUNED_KING_PROX_DIST_BASE"])};
+
+constexpr int TUNED_TRADE_RISK_SCALE_PCT = {int(extra["TUNED_TRADE_RISK_SCALE_PCT"])};
+
+constexpr int TUNED_MK_BONUS_MAX = {int(extra["TUNED_MK_BONUS_MAX"])};
+constexpr int TUNED_MK_TARGET = {int(extra["TUNED_MK_TARGET"])};
+constexpr int TUNED_MK_MISSING_SQUARE_WEIGHT = {int(extra["TUNED_MK_MISSING_SQUARE_WEIGHT"])};
+constexpr int TUNED_MK_IN_CHECK_SCALE_PCT = {int(extra["TUNED_MK_IN_CHECK_SCALE_PCT"])};
+
+constexpr int TUNED_CONSTRAINT_BASE = {int(extra["TUNED_CONSTRAINT_BASE"])};
+constexpr int TUNED_CONSTRAINT_CAP = {int(extra["TUNED_CONSTRAINT_CAP"])};
+constexpr int TUNED_CONSTRAINT_TRIGGER_MK_MAX = {int(extra["TUNED_CONSTRAINT_TRIGGER_MK_MAX"])};
+constexpr int TUNED_RICHNESS_BASE_MAX = {int(extra["TUNED_RICHNESS_BASE_MAX"])};
+constexpr int TUNED_RICHNESS_MIN = {int(extra["TUNED_RICHNESS_MIN"])};
+constexpr int TUNED_RICHNESS_PIECES_CAP = {int(extra["TUNED_RICHNESS_PIECES_CAP"])};
+constexpr int TUNED_RICHNESS_PIECE_PENALTY = {int(extra["TUNED_RICHNESS_PIECE_PENALTY"])};
+
+constexpr int TUNED_TRADE_ATTACKER_NEG_SEE_DIV = {int(extra["TUNED_TRADE_ATTACKER_NEG_SEE_DIV"])};
+constexpr int TUNED_TRADE_QUEEN_PAWN_PENALTY = {int(extra["TUNED_TRADE_QUEEN_PAWN_PENALTY"])};
+constexpr int TUNED_TRADE_SMALL_VICTIM_DIV = {int(extra["TUNED_TRADE_SMALL_VICTIM_DIV"])};
+constexpr int TUNED_TRADE_ATTACKER_SMALL_VICTIM_DIV = {int(extra["TUNED_TRADE_ATTACKER_SMALL_VICTIM_DIV"])};
+
+constexpr int TUNED_MOBILITY_RISKY_CAP_WEIGHT = {int(extra["TUNED_MOBILITY_RISKY_CAP_WEIGHT"])};
+constexpr int TUNED_MOBILITY_SAFE_CAP_WEIGHT = {int(extra["TUNED_MOBILITY_SAFE_CAP_WEIGHT"])};
+
+constexpr int TUNED_KING_ATTACK_OPP_NONKING_MAX = {int(extra["TUNED_KING_ATTACK_OPP_NONKING_MAX"])};
+constexpr int TUNED_KING_ATTACK_ACTIVITY_DIST_BASE = {int(extra["TUNED_KING_ATTACK_ACTIVITY_DIST_BASE"])};
+constexpr int TUNED_KING_ATTACK_ACTIVITY_WEIGHT = {int(extra["TUNED_KING_ATTACK_ACTIVITY_WEIGHT"])};
+constexpr int TUNED_KING_ATTACK_ATTACKER_PULL_DIST_BASE = {int(extra["TUNED_KING_ATTACK_ATTACKER_PULL_DIST_BASE"])};
+constexpr int TUNED_KING_ATTACK_ATTACKER_PULL_WEIGHT = {int(extra["TUNED_KING_ATTACK_ATTACKER_PULL_WEIGHT"])};
+constexpr int TUNED_KING_ATTACK_BOOSTED_MK_DIV = {int(extra["TUNED_KING_ATTACK_BOOSTED_MK_DIV"])};
+
+constexpr int TUNED_KING_AGGRESSION_MAT_DIFF_THRESHOLD = {int(extra["TUNED_KING_AGGRESSION_MAT_DIFF_THRESHOLD"])};
+constexpr int TUNED_KING_AGGRESSION_PHASE_MARGIN = {int(extra["TUNED_KING_AGGRESSION_PHASE_MARGIN"])};
+constexpr int TUNED_KING_AGGRESSION_DIST_BASE = {int(extra["TUNED_KING_AGGRESSION_DIST_BASE"])};
+constexpr int TUNED_KING_AGGRESSION_WEIGHT = {int(extra["TUNED_KING_AGGRESSION_WEIGHT"])};
+
+constexpr int TUNED_PAWN_ADVANCE_RANK_WEIGHT = {int(extra["TUNED_PAWN_ADVANCE_RANK_WEIGHT"])};
+
+constexpr int TUNED_FIFTY_MOVE_THRESHOLD = {int(extra["TUNED_FIFTY_MOVE_THRESHOLD"])};
+constexpr int TUNED_FIFTY_MOVE_PENALTY_PER_PLY = {int(extra["TUNED_FIFTY_MOVE_PENALTY_PER_PLY"])};
+
+"""
+
     guard = "WEIGHTS_EVALUATED_H"
     header = f"""// Auto-generated by scripts/texel_tuner.py
 // Do not edit by hand. Values are from Texel logistic regression.
@@ -530,6 +667,8 @@ constexpr int TUNED_TEMPO = {tempo};
 constexpr int TUNED_KING_PROX = {king_prox};
 constexpr int TUNED_EVAL_BIAS = {bias};
 
+{extra_section}
+
 #endif // {guard}
 """
     with open(path, "w", encoding="ascii", newline="\n") as fh:
@@ -545,6 +684,11 @@ def parse_args():
     p = argparse.ArgumentParser(description="Texel logistic tuner for PST/bishop pair/tempo.")
     p.add_argument("--input", default="build/deep_labeled_positions.csv.gz", help="Input CSV (.gz ok) from deep_labeler.")
     p.add_argument("--output-header", default="src/core/gameTreeSearch/weights_evaluated.h", help="Header path to write tuned weights.")
+    p.add_argument(
+        "--extra-params-json",
+        default="",
+        help="Optional JSON file of extra eval constants to embed into the header (keys may be with/without TUNED_ prefix).",
+    )
     p.add_argument("--holdout", type=float, default=0.2, help="Fraction of data for validation.")
     p.add_argument("--max-samples", type=int, default=0, help="Limit number of samples (0 = all).")
     p.add_argument("--seed", type=int, default=13, help="RNG seed.")
@@ -653,7 +797,8 @@ def main():
         else:
             print(f"Texel sign accuracy (emitted): train={train_acc_e*100:.2f}% val={val_acc_e*100:.2f}%")
 
-    emit_header(w_emitted, args.output_header, args.pst_clamp, args.small_clamp, args.tempo_clamp, args.bias_clamp)
+    extra_params = merge_extra_params(default_extra_params(), load_extra_params_json(args.extra_params_json))
+    emit_header(w_emitted, args.output_header, args.pst_clamp, args.small_clamp, args.tempo_clamp, args.bias_clamp, extra_params)
 
 
 if __name__ == "__main__":

@@ -117,3 +117,108 @@ The miner also logs invalid games to `build/opening_miner_fail.log` and writes t
 ## Tests
 - `python3 -m py_compile scripts/self_play_sampler.py scripts/deep_labeler.py` ensures the helpers parse.
 - `make` rebuilds the engine; it is also a proxy for linking sanity.
+
+## References
+
+The following sources were consulted during the design and implementation of our chess engine.  
+Each reference includes a hyperlink and a short explanation of how it influenced the project.  
+*Accessed November 2025.*
+
+---
+
+### General Search & Engine Architecture
+
+1. **Alpha–Beta Algorithm – ChessProgramming.org**  
+   https://www.chessprogramming.org/Alpha-Beta  
+   Used to guide the structure of our alpha–beta search, including negamax formulation, bound propagation, and search loop design.
+
+2. **Alpha–beta pruning – Wikipedia**  
+   https://en.wikipedia.org/wiki/Alpha%E2%80%93beta_pruning  
+   Provided background on alpha–beta pruning theory, pruning correctness, and complexity reductions.
+
+3. **Move Ordering – ChessProgramming.org**  
+   https://www.chessprogramming.org/Move_Ordering  
+   Helped determine our move ordering strategy (TT move → captures → killers → history) to improve pruning efficiency.
+
+---
+
+### Hashing & Transposition Tables
+
+4. **A New Hashing Method with Application for Game Playing – Albert L. Zobrist**  
+   https://research.cs.wisc.edu/techreports/1970/TR88.pdf  
+   The original paper introducing Zobrist hashing, which we used as the basis for our transposition table key generation.
+
+5. **Albert Zobrist – ChessProgramming.org**  
+   https://www.chessprogramming.org/Albert_Zobrist  
+   Provided practical explanations of how Zobrist hashing is used in modern chess engines and informed our TT implementation.
+
+---
+
+### Engine Communication Protocol (WinBoard / XBoard / CECP)
+
+6. **Chess Engine Communication Protocol (CECP) – GNU XBoard / WinBoard**  
+   https://www.gnu.org/software/xboard/engine-intf.html  
+   Primary protocol specification used to implement our CECP (XBoard) command loop (`xboard`, `protover`, `go`, `usermove`, `ping`, `time`, etc.).
+
+7. **Chess Engine Communication Protocol – ChessProgramming.org**  
+   https://www.chessprogramming.org/Chess_Engine_Communication_Protocol  
+   Served as a concise summary of required CECP commands and expected engine behaviors.
+
+8. **Chess-Engine Communication Protocol v2 – H.G. Muller**  
+   https://hgm.nubati.net/CECP.html  
+   Used to clarify subtle CECP behaviors, such as `ping/pong`, timing rules, and engine–GUI interaction details.
+
+9. **Tim Mann – Chess Engines / CECP Guidance**  
+   https://www.tim-mann.org/engines.html  
+   Provided additional insights on implementing XBoard-compatible engines, especially feature negotiation and testing.
+
+---
+
+### Tutorial Engines / Code Examples
+
+10. **Tom Kerrigan’s Simple Chess Program (TSCP)**  
+    https://www.tckerrigan.com/Chess/TSCP/  
+    Used as a conceptual reference for understanding basic engine structure (move generation, search loop, evaluation framework).
+
+11. **TSCP – ChessProgramming.org**  
+    https://www.chessprogramming.org/TSCP  
+    Helped contextualize TSCP as a tutorial engine and influenced some architectural decisions.
+
+12. **TSCP Source Code (example repository)**  
+    https://github.com/terredeciels/TSCP/blob/master/main.c  
+    Examined for insight into how a small chess engine wires together its main loop and search driver (no code was copied).
+
+---
+
+### Evaluation & Tuning
+
+13. **Texel’s Tuning Method – ChessProgramming.org**  
+    https://www.chessprogramming.org/Texel%27s_Tuning_Method  
+    Provided the theoretical foundation for our evaluation tuning pipeline using logistic regression (Texel tuning).
+
+14. **Zurichess Evaluation Improvements – Alexandru Moșoi**  
+    https://medium.com/%40brtzsnr/hi-all-a73c1b7b7a73  
+    Practical example showing how Texel tuning improves PST and evaluation coefficients in real engines.
+
+15. **Rofchade – Technical Notes (Tuning)**  
+    https://rofchade.nl/?page_id=116  
+    Referenced for understanding realistic Elo gains and methodology for tuning classical evaluation terms.
+
+16. **“Understanding evaluation function” – Chess StackExchange**  
+    https://chess.stackexchange.com/questions/6178/understanding-evaluation-function  
+    Helped reinforce our understanding of classical evaluation components (material, PSTs, mobility) and why tuning them matters.
+
+---
+
+### Optional / Background References  
+(Include only if actually used.)
+
+17. **Chess Engine, pt. 4: α–β pruning and better search – DogeyStamp**  
+    https://www.dogeystamp.com/chess4/  
+    Tutorial-style explanation of alpha–beta pruning; helpful during early search development.
+
+18. **“Which interface protocol should I implement for my chess engine?” – Chess StackExchange**  
+    https://chess.stackexchange.com/questions/6110/which-interface-protocol-should-i-implement-for-my-chess-engine  
+    Helped justify CECP as the required protocol and clarified differences from UCI.
+
+---

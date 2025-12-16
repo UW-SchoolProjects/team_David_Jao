@@ -111,13 +111,13 @@ See LICENSE file for details.
 // Piece values indexed by PieceType (0..6).
 // Middlegame inflated to discourage forced early trades; endgame tapers toward
 // more standard values once forced-exchange risk is lower.
-static constexpr int TRADE_RISK_SCALE_PCT = 70; // soften trade risk impact
-static constexpr int MK_BONUS_MAX = 100;        // cap for mk bonus
-static constexpr int CONSTRAINT_BASE = 220;     // base for mk<=1 constraint bonus
-static constexpr int CONSTRAINT_CAP = 70;       // hard cap on constraint
-static constexpr int RICHNESS_BASE_MAX = 120;   // upper bound before scaling with material
+static constexpr int DEFAULT_TRADE_RISK_SCALE_PCT = 70; // soften trade risk impact
+static constexpr int DEFAULT_MK_BONUS_MAX = 100;        // cap for mk bonus
+static constexpr int DEFAULT_CONSTRAINT_BASE = 220;     // base for mk<=1 constraint bonus
+static constexpr int DEFAULT_CONSTRAINT_CAP = 70;       // hard cap on constraint
+static constexpr int DEFAULT_RICHNESS_BASE_MAX = 120;   // upper bound before scaling with material
 
-static constexpr int MG_PIECE_VALUE[7] = {
+static constexpr int DEFAULT_MG_PIECE_VALUE[7] = {
     0,    // EMPTY
     100,  // PAWN
     330,  // KNIGHT
@@ -127,7 +127,7 @@ static constexpr int MG_PIECE_VALUE[7] = {
     0     // KING (material value usually not used directly)
 };
 
-static constexpr int EG_PIECE_VALUE[7] = {
+static constexpr int DEFAULT_EG_PIECE_VALUE[7] = {
     0,   // EMPTY
     100, // PAWN
     300, // KNIGHT
@@ -137,6 +137,72 @@ static constexpr int EG_PIECE_VALUE[7] = {
     0    // KING
 };
 
+// Centrality weights based on `center_closeness()` (0..3). This is a cheap
+// (and very tuneable) proxy for piece activity/king safety.
+static constexpr int DEFAULT_CENTER_MG_WEIGHT[7] = {
+    0,  // EMPTY
+    6,  // PAWN
+    -2, // KNIGHT
+    -3, // BISHOP
+    -3, // ROOK
+    -5, // QUEEN
+    0   // KING
+};
+
+static constexpr int DEFAULT_CENTER_EG_WEIGHT[7] = {
+    0, // EMPTY
+    2, // PAWN
+    2, // KNIGHT
+    3, // BISHOP
+    3, // ROOK
+    4, // QUEEN
+    6  // KING
+};
+
+// Distance bases (Manhattan) for proximity-style terms.
+static constexpr int DEFAULT_KING_PROX_DIST_BASE = 10;
+
+// Opponent king mobility ("Mk") tactical pressure term.
+static constexpr int DEFAULT_MK_TARGET = 8;                 // king has at most 8 moves
+static constexpr int DEFAULT_MK_MISSING_SQUARE_WEIGHT = 12; // cp per missing king move
+static constexpr int DEFAULT_MK_IN_CHECK_SCALE_PCT = 50;    // scale Mk bonus when opp is in check
+
+// Constraint bonus when opponent king is (nearly) boxed in and not in check.
+static constexpr int DEFAULT_CONSTRAINT_TRIGGER_MK_MAX = 1; // apply when mk <= N
+static constexpr int DEFAULT_RICHNESS_MIN = 20;
+static constexpr int DEFAULT_RICHNESS_PIECES_CAP = 30;
+static constexpr int DEFAULT_RICHNESS_PIECE_PENALTY = 3;
+
+// Trade-risk penalties (forced captures with valuable pieces).
+static constexpr int DEFAULT_TRADE_ATTACKER_NEG_SEE_DIV = 5;
+static constexpr int DEFAULT_TRADE_QUEEN_PAWN_PENALTY = 20;
+static constexpr int DEFAULT_TRADE_SMALL_VICTIM_DIV = 2;
+static constexpr int DEFAULT_TRADE_ATTACKER_SMALL_VICTIM_DIV = 6;
+
+// "Mobility" proxy (counts of safe vs unsafe captures).
+static constexpr int DEFAULT_MOBILITY_RISKY_CAP_WEIGHT = 3;
+static constexpr int DEFAULT_MOBILITY_SAFE_CAP_WEIGHT = 8;
+
+// Endgame king-hunt / conversion bonuses.
+static constexpr int DEFAULT_KING_ATTACK_OPP_NONKING_MAX = 1;
+static constexpr int DEFAULT_KING_ATTACK_ACTIVITY_DIST_BASE = 10;
+static constexpr int DEFAULT_KING_ATTACK_ACTIVITY_WEIGHT = 8;
+static constexpr int DEFAULT_KING_ATTACK_ATTACKER_PULL_DIST_BASE = 14;
+static constexpr int DEFAULT_KING_ATTACK_ATTACKER_PULL_WEIGHT = 2;
+static constexpr int DEFAULT_KING_ATTACK_BOOSTED_MK_DIV = 2;
+
+static constexpr int DEFAULT_KING_AGGRESSION_MAT_DIFF_THRESHOLD = 400;
+static constexpr int DEFAULT_KING_AGGRESSION_PHASE_MARGIN = 2;
+static constexpr int DEFAULT_KING_AGGRESSION_DIST_BASE = 12;
+static constexpr int DEFAULT_KING_AGGRESSION_WEIGHT = 6;
+
+// Pawn advancement incentive (rank-based).
+static constexpr int DEFAULT_PAWN_ADVANCE_RANK_WEIGHT = 2;
+
+// 50-move rule proximity penalty (discourage aimless play).
+static constexpr int DEFAULT_FIFTY_MOVE_THRESHOLD = 60;
+static constexpr int DEFAULT_FIFTY_MOVE_PENALTY_PER_PLY = 3;
+
 // Bishop pair bonus (applied once per side)
 static constexpr int DEFAULT_BISHOP_PAIR_BONUS = 30;
 
@@ -144,16 +210,111 @@ static constexpr int DEFAULT_BISHOP_PAIR_BONUS = 30;
 static constexpr int DEFAULT_TEMPO_BONUS = 10;
 
 #if HAVE_TUNED_WEIGHTS
+static const int (&MG_PIECE_VALUE)[7] = TUNED_MG_PIECE_VALUE;
+static const int (&EG_PIECE_VALUE)[7] = TUNED_EG_PIECE_VALUE;
+static const int (&CENTER_MG_WEIGHT)[7] = TUNED_CENTER_MG_WEIGHT;
+static const int (&CENTER_EG_WEIGHT)[7] = TUNED_CENTER_EG_WEIGHT;
+static constexpr int KING_PROX_DIST_BASE = TUNED_KING_PROX_DIST_BASE;
+
+static constexpr int TRADE_RISK_SCALE_PCT = TUNED_TRADE_RISK_SCALE_PCT;
+static constexpr int MK_BONUS_MAX = TUNED_MK_BONUS_MAX;
+static constexpr int MK_TARGET = TUNED_MK_TARGET;
+static constexpr int MK_MISSING_SQUARE_WEIGHT = TUNED_MK_MISSING_SQUARE_WEIGHT;
+static constexpr int MK_IN_CHECK_SCALE_PCT = TUNED_MK_IN_CHECK_SCALE_PCT;
+
+static constexpr int CONSTRAINT_BASE = TUNED_CONSTRAINT_BASE;
+static constexpr int CONSTRAINT_CAP = TUNED_CONSTRAINT_CAP;
+static constexpr int CONSTRAINT_TRIGGER_MK_MAX = TUNED_CONSTRAINT_TRIGGER_MK_MAX;
+static constexpr int RICHNESS_BASE_MAX = TUNED_RICHNESS_BASE_MAX;
+static constexpr int RICHNESS_MIN = TUNED_RICHNESS_MIN;
+static constexpr int RICHNESS_PIECES_CAP = TUNED_RICHNESS_PIECES_CAP;
+static constexpr int RICHNESS_PIECE_PENALTY = TUNED_RICHNESS_PIECE_PENALTY;
+
+static constexpr int TRADE_ATTACKER_NEG_SEE_DIV = TUNED_TRADE_ATTACKER_NEG_SEE_DIV;
+static constexpr int TRADE_QUEEN_PAWN_PENALTY = TUNED_TRADE_QUEEN_PAWN_PENALTY;
+static constexpr int TRADE_SMALL_VICTIM_DIV = TUNED_TRADE_SMALL_VICTIM_DIV;
+static constexpr int TRADE_ATTACKER_SMALL_VICTIM_DIV = TUNED_TRADE_ATTACKER_SMALL_VICTIM_DIV;
+
+static constexpr int MOBILITY_RISKY_CAP_WEIGHT = TUNED_MOBILITY_RISKY_CAP_WEIGHT;
+static constexpr int MOBILITY_SAFE_CAP_WEIGHT = TUNED_MOBILITY_SAFE_CAP_WEIGHT;
+
+static constexpr int KING_ATTACK_OPP_NONKING_MAX = TUNED_KING_ATTACK_OPP_NONKING_MAX;
+static constexpr int KING_ATTACK_ACTIVITY_DIST_BASE = TUNED_KING_ATTACK_ACTIVITY_DIST_BASE;
+static constexpr int KING_ATTACK_ACTIVITY_WEIGHT = TUNED_KING_ATTACK_ACTIVITY_WEIGHT;
+static constexpr int KING_ATTACK_ATTACKER_PULL_DIST_BASE = TUNED_KING_ATTACK_ATTACKER_PULL_DIST_BASE;
+static constexpr int KING_ATTACK_ATTACKER_PULL_WEIGHT = TUNED_KING_ATTACK_ATTACKER_PULL_WEIGHT;
+static constexpr int KING_ATTACK_BOOSTED_MK_DIV = TUNED_KING_ATTACK_BOOSTED_MK_DIV;
+
+static constexpr int KING_AGGRESSION_MAT_DIFF_THRESHOLD = TUNED_KING_AGGRESSION_MAT_DIFF_THRESHOLD;
+static constexpr int KING_AGGRESSION_PHASE_MARGIN = TUNED_KING_AGGRESSION_PHASE_MARGIN;
+static constexpr int KING_AGGRESSION_DIST_BASE = TUNED_KING_AGGRESSION_DIST_BASE;
+static constexpr int KING_AGGRESSION_WEIGHT = TUNED_KING_AGGRESSION_WEIGHT;
+
+static constexpr int PAWN_ADVANCE_RANK_WEIGHT = TUNED_PAWN_ADVANCE_RANK_WEIGHT;
+
+static constexpr int FIFTY_MOVE_THRESHOLD = TUNED_FIFTY_MOVE_THRESHOLD;
+static constexpr int FIFTY_MOVE_PENALTY_PER_PLY = TUNED_FIFTY_MOVE_PENALTY_PER_PLY;
+
 static constexpr int BISHOP_PAIR_BONUS = TUNED_BISHOP_PAIR;
 static constexpr int TEMPO_BONUS = TUNED_TEMPO;
 static constexpr int KING_PROX_BONUS = TUNED_KING_PROX;
 static constexpr int EVAL_BIAS = TUNED_EVAL_BIAS;
 #else
+static const int (&MG_PIECE_VALUE)[7] = DEFAULT_MG_PIECE_VALUE;
+static const int (&EG_PIECE_VALUE)[7] = DEFAULT_EG_PIECE_VALUE;
+static const int (&CENTER_MG_WEIGHT)[7] = DEFAULT_CENTER_MG_WEIGHT;
+static const int (&CENTER_EG_WEIGHT)[7] = DEFAULT_CENTER_EG_WEIGHT;
+static constexpr int KING_PROX_DIST_BASE = DEFAULT_KING_PROX_DIST_BASE;
+
+static constexpr int TRADE_RISK_SCALE_PCT = DEFAULT_TRADE_RISK_SCALE_PCT;
+static constexpr int MK_BONUS_MAX = DEFAULT_MK_BONUS_MAX;
+static constexpr int MK_TARGET = DEFAULT_MK_TARGET;
+static constexpr int MK_MISSING_SQUARE_WEIGHT = DEFAULT_MK_MISSING_SQUARE_WEIGHT;
+static constexpr int MK_IN_CHECK_SCALE_PCT = DEFAULT_MK_IN_CHECK_SCALE_PCT;
+
+static constexpr int CONSTRAINT_BASE = DEFAULT_CONSTRAINT_BASE;
+static constexpr int CONSTRAINT_CAP = DEFAULT_CONSTRAINT_CAP;
+static constexpr int CONSTRAINT_TRIGGER_MK_MAX = DEFAULT_CONSTRAINT_TRIGGER_MK_MAX;
+static constexpr int RICHNESS_BASE_MAX = DEFAULT_RICHNESS_BASE_MAX;
+static constexpr int RICHNESS_MIN = DEFAULT_RICHNESS_MIN;
+static constexpr int RICHNESS_PIECES_CAP = DEFAULT_RICHNESS_PIECES_CAP;
+static constexpr int RICHNESS_PIECE_PENALTY = DEFAULT_RICHNESS_PIECE_PENALTY;
+
+static constexpr int TRADE_ATTACKER_NEG_SEE_DIV = DEFAULT_TRADE_ATTACKER_NEG_SEE_DIV;
+static constexpr int TRADE_QUEEN_PAWN_PENALTY = DEFAULT_TRADE_QUEEN_PAWN_PENALTY;
+static constexpr int TRADE_SMALL_VICTIM_DIV = DEFAULT_TRADE_SMALL_VICTIM_DIV;
+static constexpr int TRADE_ATTACKER_SMALL_VICTIM_DIV = DEFAULT_TRADE_ATTACKER_SMALL_VICTIM_DIV;
+
+static constexpr int MOBILITY_RISKY_CAP_WEIGHT = DEFAULT_MOBILITY_RISKY_CAP_WEIGHT;
+static constexpr int MOBILITY_SAFE_CAP_WEIGHT = DEFAULT_MOBILITY_SAFE_CAP_WEIGHT;
+
+static constexpr int KING_ATTACK_OPP_NONKING_MAX = DEFAULT_KING_ATTACK_OPP_NONKING_MAX;
+static constexpr int KING_ATTACK_ACTIVITY_DIST_BASE = DEFAULT_KING_ATTACK_ACTIVITY_DIST_BASE;
+static constexpr int KING_ATTACK_ACTIVITY_WEIGHT = DEFAULT_KING_ATTACK_ACTIVITY_WEIGHT;
+static constexpr int KING_ATTACK_ATTACKER_PULL_DIST_BASE = DEFAULT_KING_ATTACK_ATTACKER_PULL_DIST_BASE;
+static constexpr int KING_ATTACK_ATTACKER_PULL_WEIGHT = DEFAULT_KING_ATTACK_ATTACKER_PULL_WEIGHT;
+static constexpr int KING_ATTACK_BOOSTED_MK_DIV = DEFAULT_KING_ATTACK_BOOSTED_MK_DIV;
+
+static constexpr int KING_AGGRESSION_MAT_DIFF_THRESHOLD = DEFAULT_KING_AGGRESSION_MAT_DIFF_THRESHOLD;
+static constexpr int KING_AGGRESSION_PHASE_MARGIN = DEFAULT_KING_AGGRESSION_PHASE_MARGIN;
+static constexpr int KING_AGGRESSION_DIST_BASE = DEFAULT_KING_AGGRESSION_DIST_BASE;
+static constexpr int KING_AGGRESSION_WEIGHT = DEFAULT_KING_AGGRESSION_WEIGHT;
+
+static constexpr int PAWN_ADVANCE_RANK_WEIGHT = DEFAULT_PAWN_ADVANCE_RANK_WEIGHT;
+
+static constexpr int FIFTY_MOVE_THRESHOLD = DEFAULT_FIFTY_MOVE_THRESHOLD;
+static constexpr int FIFTY_MOVE_PENALTY_PER_PLY = DEFAULT_FIFTY_MOVE_PENALTY_PER_PLY;
+
 static constexpr int BISHOP_PAIR_BONUS = DEFAULT_BISHOP_PAIR_BONUS;
 static constexpr int TEMPO_BONUS = DEFAULT_TEMPO_BONUS;
 static constexpr int KING_PROX_BONUS = 0;
 static constexpr int EVAL_BIAS = 0;
 #endif
+
+static_assert(TRADE_ATTACKER_NEG_SEE_DIV >= 1, "TRADE_ATTACKER_NEG_SEE_DIV must be >= 1");
+static_assert(TRADE_SMALL_VICTIM_DIV >= 1, "TRADE_SMALL_VICTIM_DIV must be >= 1");
+static_assert(TRADE_ATTACKER_SMALL_VICTIM_DIV >= 1, "TRADE_ATTACKER_SMALL_VICTIM_DIV must be >= 1");
+static_assert(KING_ATTACK_BOOSTED_MK_DIV >= 1, "KING_ATTACK_BOOSTED_MK_DIV must be >= 1");
 
 // Phase weights: how much each piece contributes to "middlegame-ness".
 // We exclude pawns and kings (standard approach).
@@ -864,36 +1025,8 @@ int basicEvaluate(const Board &board)
     phase += PHASE_WEIGHT[pt];
 
     int close = center_closeness(sq64);
-    int mgAdj = 0;
-    int egAdj = 0;
-    switch (pt)
-    {
-    case PAWN:
-      mgAdj += close * 6; // central pawns favored in MG
-      egAdj += close * 2;
-      break;
-    case KNIGHT:
-      mgAdj -= close * 2; // reduce risky early centralization
-      egAdj += close * 2;
-      break;
-    case BISHOP:
-      mgAdj -= close * 3;
-      egAdj += close * 3;
-      break;
-    case ROOK:
-      mgAdj -= close * 3;
-      egAdj += close * 3;
-      break;
-    case QUEEN:
-      mgAdj -= close * 5;
-      egAdj += close * 4;
-      break;
-    case KING:
-      egAdj += close * 6; // king activity in EG
-      break;
-    default:
-      break;
-    }
+    int mgAdj = close * CENTER_MG_WEIGHT[pt];
+    int egAdj = close * CENTER_EG_WEIGHT[pt];
 
     if (side == WHITE)
     {
@@ -935,7 +1068,7 @@ int basicEvaluate(const Board &board)
   if (KING_PROX_BONUS != 0 && kingSq[WHITE] != -1 && kingSq[BLACK] != -1)
   {
     const int dist = manhattan(kingSq[WHITE], kingSq[BLACK]);
-    const int prox = std::max(0, 10 - dist);
+    const int prox = std::max(0, KING_PROX_DIST_BASE - dist);
     if (prox > 0)
     {
       const int egWeight = PHASE_TOTAL - phase;
@@ -1045,21 +1178,24 @@ int basicEvaluate(const Board &board)
       mk = popcount(legal);
     }
   }
-  int mkBonus = std::max(0, (8 - mk) * 12);
+  int mkMissing = std::max(0, MK_TARGET - mk);
+  int mkBonus = mkMissing * MK_MISSING_SQUARE_WEIGHT;
   if (oppInCheck)
-    mkBonus /= 2;
+    mkBonus = (mkBonus * MK_IN_CHECK_SCALE_PCT) / 100;
   if (mkBonus > MK_BONUS_MAX)
     mkBonus = MK_BONUS_MAX;
   scoreWhite += (stm == WHITE ? mkBonus : -mkBonus);
 
-  if (!oppInCheck && mk <= 1)
+  if (!oppInCheck && mk <= CONSTRAINT_TRIGGER_MK_MAX)
   {
     int totalNonKing =
         popcount(bb_of(board, WPAWN) | bb_of(board, WKNIGHT) | bb_of(board, WBISHOP) | bb_of(board, WROOK) |
                  bb_of(board, WQUEEN)) +
         popcount(bb_of(board, BPAWN) | bb_of(board, BKNIGHT) | bb_of(board, BBISHOP) | bb_of(board, BROOK) |
                  bb_of(board, BQUEEN));
-    int richnessScale = std::max(20, RICHNESS_BASE_MAX - std::min(30, totalNonKing) * 3);
+    int richnessScale = std::max(
+        RICHNESS_MIN,
+        RICHNESS_BASE_MAX - std::min(RICHNESS_PIECES_CAP, totalNonKing) * RICHNESS_PIECE_PENALTY);
     int base = (CONSTRAINT_BASE * mgPhaseScaled) / 100;
     int constraint = std::min(base, richnessScale);
     if (constraint > CONSTRAINT_CAP)
@@ -1080,11 +1216,11 @@ int basicEvaluate(const Board &board)
     int see = static_exchange_eval_side(board, c, stm);
     int attackerVal = MG_PIECE_VALUE[c.mover];
     if (see < 0 && attackerVal >= MG_PIECE_VALUE[KNIGHT])
-      tradePenalty += (-see) + attackerVal / 5;
+      tradePenalty += (-see) + attackerVal / TRADE_ATTACKER_NEG_SEE_DIV;
     if (c.mover == QUEEN && c.victim == PAWN)
-      tradePenalty += 20; // discourage queen pawn grabs under compulsion
-    if (MG_PIECE_VALUE[c.victim] < attackerVal / 2 && see <= 0)
-      tradePenalty += attackerVal / 6;
+      tradePenalty += TRADE_QUEEN_PAWN_PENALTY; // discourage queen pawn grabs under compulsion
+    if (MG_PIECE_VALUE[c.victim] < attackerVal / TRADE_SMALL_VICTIM_DIV && see <= 0)
+      tradePenalty += attackerVal / TRADE_ATTACKER_SMALL_VICTIM_DIV;
   }
   tradePenalty = (tradePenalty * mgPhaseScaled) / 100;
   tradePenalty = (tradePenalty * TRADE_RISK_SCALE_PCT) / 100;
@@ -1106,7 +1242,7 @@ int basicEvaluate(const Board &board)
     else
       ++riskyCaps;
   }
-  int mobilityBase = riskyCaps * 3 - safeCaps * 8;
+  int mobilityBase = riskyCaps * MOBILITY_RISKY_CAP_WEIGHT - safeCaps * MOBILITY_SAFE_CAP_WEIGHT;
   mobilityBase = (mobilityBase * mgPhaseScaled) / 100;
   if (mobilityBase)
     scoreWhite += (opp == WHITE ? mobilityBase : -mobilityBase);
@@ -1116,7 +1252,7 @@ int basicEvaluate(const Board &board)
   // ---------------------------------------------------------------------------
   int oppNonKing = pieceCount[opp][PAWN] + pieceCount[opp][KNIGHT] + pieceCount[opp][BISHOP] +
                    pieceCount[opp][ROOK] + pieceCount[opp][QUEEN];
-  bool oppMinimal = pieceCount[opp][PAWN] == 0 && oppNonKing <= 1;
+  bool oppMinimal = pieceCount[opp][PAWN] == 0 && oppNonKing <= KING_ATTACK_OPP_NONKING_MAX;
   bool stmHasMatingMaterial =
       pieceCount[stm][QUEEN] > 0 || pieceCount[stm][ROOK] > 0 || pieceCount[stm][PAWN] > 0 ||
       pieceCount[stm][BISHOP] >= 2 || (pieceCount[stm][BISHOP] == 1 && pieceCount[stm][KNIGHT] >= 1);
@@ -1125,7 +1261,7 @@ int basicEvaluate(const Board &board)
   if (kingAttackPhase)
   {
     int kingDist = manhattan(kingSq[stm], kingSq[opp]);
-    int kingActivity = std::max(0, 10 - kingDist) * 8;
+    int kingActivity = std::max(0, KING_ATTACK_ACTIVITY_DIST_BASE - kingDist) * KING_ATTACK_ACTIVITY_WEIGHT;
     int nearestAttacker = 99;
     uint64_t attackers = bb_of(board, (static_cast<int>(stm) << 3) | QUEEN) |
                          bb_of(board, (static_cast<int>(stm) << 3) | ROOK) |
@@ -1140,9 +1276,11 @@ int basicEvaluate(const Board &board)
       if (d < nearestAttacker)
         nearestAttacker = d;
     }
-    int attackerPull = (nearestAttacker != 99) ? std::max(0, 14 - nearestAttacker) * 2 : 0;
+    int attackerPull = (nearestAttacker != 99)
+                           ? std::max(0, KING_ATTACK_ATTACKER_PULL_DIST_BASE - nearestAttacker) * KING_ATTACK_ATTACKER_PULL_WEIGHT
+                           : 0;
     int kingAttackBonus = kingActivity + attackerPull;
-    int boostedMk = mkBonus / 2; // extra weight beyond the base Mk bonus
+    int boostedMk = mkBonus / KING_ATTACK_BOOSTED_MK_DIV; // extra weight beyond the base Mk bonus
     scoreWhite += (stm == WHITE ? boostedMk : -boostedMk);
     scoreWhite += (stm == WHITE ? kingAttackBonus : -kingAttackBonus);
   }
@@ -1151,10 +1289,11 @@ int basicEvaluate(const Board &board)
   if (kingSq[stm] != -1 && kingSq[opp] != -1)
   {
     int matDiff = matScore[stm] - matScore[opp];
-    if (phase <= EG_PHASE_THRESHOLD + 2 && matDiff >= 400)
+    if (phase <= EG_PHASE_THRESHOLD + KING_AGGRESSION_PHASE_MARGIN &&
+        matDiff >= KING_AGGRESSION_MAT_DIFF_THRESHOLD)
     {
       int kingDist = manhattan(kingSq[stm], kingSq[opp]);
-      int aggression = std::max(0, 12 - kingDist) * 6;
+      int aggression = std::max(0, KING_AGGRESSION_DIST_BASE - kingDist) * KING_AGGRESSION_WEIGHT;
       scoreWhite += (stm == WHITE ? aggression : -aggression);
     }
   }
@@ -1168,7 +1307,7 @@ int basicEvaluate(const Board &board)
       int sq = __builtin_ctzll(lsb);
       wp ^= lsb;
       int rank = sq >> 3;
-      scoreWhite += rank * 2; // small bonus per rank advanced
+      scoreWhite += rank * PAWN_ADVANCE_RANK_WEIGHT; // small bonus per rank advanced
     }
     uint64_t bp = bb_of(board, BPAWN);
     while (bp)
@@ -1177,7 +1316,7 @@ int basicEvaluate(const Board &board)
       int sq = __builtin_ctzll(lsb);
       bp ^= lsb;
       int rankFromWhite = 7 - (sq >> 3);
-      scoreWhite -= rankFromWhite * 2;
+      scoreWhite -= rankFromWhite * PAWN_ADVANCE_RANK_WEIGHT;
     }
   }
 
@@ -1185,9 +1324,9 @@ int basicEvaluate(const Board &board)
   int sideToMovePenalty = 0;
   {
     int hm = board.halfmove_clock;
-    if (hm > 60)
+    if (hm > FIFTY_MOVE_THRESHOLD)
     {
-      sideToMovePenalty = (hm - 60) * 3; // 3 cp per ply after 60
+      sideToMovePenalty = (hm - FIFTY_MOVE_THRESHOLD) * FIFTY_MOVE_PENALTY_PER_PLY;
     }
   }
 
