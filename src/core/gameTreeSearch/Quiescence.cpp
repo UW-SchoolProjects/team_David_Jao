@@ -132,9 +132,10 @@ int qsearch(Board &board, int alpha, int beta, int ply, EvalFn evalFn)
     return 0;
   }
 
-  // Generate moves: evasions if in check; otherwise only explore captures.
+  // Forced-capture variant: generate legal moves, enforcing mandatory captures
+  // when at least one capture exists (including for check evasions).
   MoveList moves;
-  validMoveGeneration(board, sideToMove, moves, /*captureOnly=*/inCheck ? false : true);
+  validMoveGeneration(board, sideToMove, moves, /*captureOnly=*/true);
 
   // No moves: either checkmate or capture-less position
   if (moves.empty()) {

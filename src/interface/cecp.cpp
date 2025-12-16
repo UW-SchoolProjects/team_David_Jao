@@ -362,7 +362,7 @@ static bool book_move_for_root(EngineSession &sess, const MoveList &rootMoves, M
         return false;
     }
     Move parsed;
-    if (!parse_uci_move(sess.board, uci, parsed) || parsed.isNull()) {
+    if (!parse_uci_move(sess.board, uci, parsed, sess.forced_capture_variant) || parsed.isNull()) {
         diag_log("opening_book: book move illegal key=" + format_key_hex(sess.board.zobrist_key) + " uci=" + uci);
         return false;
     }
@@ -526,19 +526,25 @@ std::string move_to_uci(const Move &m) {
     return s;
 }
 
-// Generate all legal moves under your forced-capture rule
-static void generate_variant_moves(Board &b, MoveList &out) {
+// Generate all legal moves under the session's ruleset.
+static void generate_session_moves(Board &b, bool forced_capture_variant, MoveList &out) {
     out.clear();
-    // Wrapper enforces "must capture if a capture exists".
-    get_variant_moves(b, static_cast<Side>(b.side), out);
+    Side side = static_cast<Side>(b.side);
+    if (forced_capture_variant) {
+        // Wrapper enforces "must capture if a capture exists".
+        get_variant_moves(b, side, out);
+    } else {
+        validMoveGeneration(b, side, out, /*captureOnly=*/false);
+    }
 }
 
 bool parse_uci_move(Board &b,
                     const std::string &text,
-                    Move &out_move)
+                    Move &out_move,
+                    bool forced_capture_variant)
 {
     MoveList moves;
-    generate_variant_moves(b, moves);
+    generate_session_moves(b, forced_capture_variant, moves);
 
     for (int i = 0; i < moves.count; ++i) {
         const Move &m = moves.moves[i];
@@ -548,6 +554,22 @@ bool parse_uci_move(Board &b,
         }
     }
     return false; // illegal or unknown
+}
+
+bool parse_uci_move(Board &b,
+                    const std::string &text,
+                    Move &out_move)
+{
+    // Backwards-compatible default: preserve the historical forced-capture behavior.
+    return parse_uci_move(b, text, out_move, /*forced_capture_variant=*/true);
+}
+
+static bool move_in_list(const MoveList &moves, const Move &m) {
+    if (m.isNull()) return false;
+    for (int i = 0; i < moves.count; ++i) {
+        if (moves.moves[i].raw() == m.raw()) return true;
+    }
+    return false;
 }
 
 static Move search_best_move(EngineSession &sess) {
@@ -565,8 +587,8 @@ static Move search_best_move(EngineSession &sess) {
     MoveList rootMoves;
     {
         Board bcopy = sess.board;
-        generate_variant_moves(bcopy, rootMoves);
-        bool forcedCaptures = (rootMoves.count > 0) && rootMoves.moves[0].isCapture();
+        generate_session_moves(bcopy, sess.forced_capture_variant, rootMoves);
+        bool forcedCaptures = sess.forced_capture_variant && (rootMoves.count > 0) && rootMoves.moves[0].isCapture();
         diag_log("root_moves=" + std::to_string(rootMoves.count) +
                  " forced_captures=" + std::to_string(forcedCaptures ? 1 : 0) +
                  " in_check=" + std::to_string(in_check ? 1 : 0) +
@@ -610,6 +632,7 @@ static Move search_best_move(EngineSession &sess) {
     auto diag_start = std::chrono::steady_clock::now();
     int rootScore = 0;
     diag_log("calling getBestMove");
+    set_forced_capture_variant(sess.forced_capture_variant);
     Move best = getBestMove(sess.board, searchDepth, basicEvaluate, &budget, &rootScore);
     auto diag_end = std::chrono::steady_clock::now();
     auto diag_elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(diag_end - diag_start).count();
@@ -625,11 +648,14 @@ static Move search_best_move(EngineSession &sess) {
         sess.last_root_score = rootScore;
         sess.has_root_score = true;
     }
+    // Defensive: ensure we never surface an illegal root move to the GUI.
+    if (!best.isNull() && !move_in_list(rootMoves, best)) {
+        diag_log("search_best_move: illegal best move from search; falling back best=" + move_to_uci(best));
+        best = rootMoves.moves[0];
+    }
     // Fallback on abort: ensure we return a legal move
     if (rootScore == SCORE_TIME_ABORT && best.isNull()) {
-        MoveList legal;
-        validMoveGeneration(sess.board, static_cast<Side>(sess.board.side), legal, /*captureOnly=*/false);
-        if (legal.count > 0) best = legal.moves[0];
+        if (rootMoves.count > 0) best = rootMoves.moves[0];
         diag_log("time abort fallback best=" + (best.isNull() ? std::string("<null>") : move_to_uci(best)));
     }
 #ifdef ENGINE_LOGGING
@@ -657,6 +683,9 @@ void init_engine_session(EngineSession &sess) {
     TT.clear();
     log_msg("Session initialized");
     log_board_fen(sess.board, "Startpos");
+
+    // This engine always operates under forced-capture rules.
+    sess.forced_capture_variant = true;
 
     // CECP/XBoard expectation:
     // - a new game starts at white-to-move
@@ -731,12 +760,21 @@ static void do_engine_move(EngineSession &sess) {
 
     Move best = search_best_move(sess);
 
+    MoveList legalMoves;
+    {
+        Board bcopy = sess.board;
+        generate_session_moves(bcopy, sess.forced_capture_variant, legalMoves);
+    }
+
+    if (!best.isNull() && !move_in_list(legalMoves, best)) {
+        diag_log("do_engine_move: search returned illegal move; falling back move=" + move_to_uci(best));
+        best = Move();
+    }
+
     if (best.isNull()) {
         // Search failed to return a move. Fall back to playing any legal move so
         // protocol clients (xboard/samplers) don't stall waiting forever.
-        MoveList fallbackMoves;
-        generate_variant_moves(sess.board, fallbackMoves);
-        if (fallbackMoves.count == 0) {
+        if (legalMoves.count == 0) {
             log_msg("No legal move to play (null move).");
             // No legal moves: mate or stalemate. Emit a null move and surface a
             // deterministic terminal score so protocol clients don't hang.
@@ -749,7 +787,7 @@ static void do_engine_move(EngineSession &sess) {
             std::cout << "move 0000" << std::endl;
             return;
         }
-        best = fallbackMoves.moves[0];
+        best = legalMoves.moves[0];
         if (!sess.has_root_score) {
             // Provide a deterministic score for tooling that relies on david_lastscore.
             sess.last_root_score = basicEvaluate(sess.board);
@@ -768,8 +806,24 @@ static void do_engine_move(EngineSession &sess) {
   bool ok = make_move(sess.board, best);
   if (!ok) {
     // This should never happen if moves came from validMoveGeneration.
-    log_msg("make_move failed for engine move " + s);
-    return;
+    // Try other legal moves before giving up to avoid hanging the GUI.
+    diag_log("do_engine_move: make_move failed for engine move " + s + " ; trying fallbacks");
+    bool played = false;
+    for (int i = 0; i < legalMoves.count; ++i) {
+        Move alt = legalMoves.moves[i];
+        if (alt.raw() == best.raw()) continue;
+        if (make_move(sess.board, alt)) {
+            best = alt;
+            s = move_to_uci(best);
+            played = true;
+            break;
+        }
+    }
+    if (!played) {
+        log_msg("No legal move to play after make_move failures.");
+        std::cout << "move 0000" << std::endl;
+        return;
+    }
   }
 
   sess.side_to_move = sess.board.side;
@@ -794,7 +848,7 @@ static void handle_go(EngineSession &sess) {
 static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
   log_msg("usermove " + mvStr);
   Move m;
-  if (!parse_uci_move(sess.board, mvStr, m)) {
+  if (!parse_uci_move(sess.board, mvStr, m, sess.forced_capture_variant)) {
         log_msg("usermove rejected: not found in legal list");
         std::cout << "Illegal move: " << mvStr << "\n";
         return;
@@ -814,7 +868,7 @@ static void handle_usermove(EngineSession &sess, const std::string &mvStr) {
     sess.last_opp_move_ts = std::chrono::steady_clock::now();
 
     MoveList moves;
-    generate_variant_moves(sess.board, moves);
+    generate_session_moves(sess.board, sess.forced_capture_variant, moves);
     if (moves.count == 0) {
         log_msg("no legal replies after usermove; skipping engine move");
         return;
@@ -1015,7 +1069,7 @@ void cecp_main_loop(EngineSession &sess) {
         }
         else if (cmd == "david_moves") {
             MoveList moves;
-            generate_variant_moves(sess.board, moves);
+            generate_session_moves(sess.board, sess.forced_capture_variant, moves);
             std::cout << "moves";
             Board tmp = sess.board;
             for (int i = 0; i < moves.count; ++i) {
@@ -1028,6 +1082,16 @@ void cecp_main_loop(EngineSession &sess) {
             }
             std::cout << "\n";
             std::cout.flush();
+        }
+        else if (cmd == "david_forced") {
+            int enabled = 0;
+            iss >> enabled;
+            (void)enabled;
+            // This engine always runs in forced-capture mode; keep the helper for
+            // backwards-compatible scripts.
+            sess.forced_capture_variant = true;
+            TT.clear();
+            reset_move_history();
         }
         else if (cmd == "result") {
             handle_result(sess, line);

@@ -271,6 +271,7 @@ class EngineReplayer:
         self._send("protover 2")
         self._send("new")
         self._send("force")
+        self._send("david_forced 1")
         probe = self._query_prefix("david_fen", "fen ")
         if probe is None:
             raise ReplayError("engine did not respond to david_fen")
@@ -283,6 +284,7 @@ class EngineReplayer:
     def reset(self, start_fen: str):
         self._send("new")
         self._send("force")
+        self._send("david_forced 1")
         self._send(f"setboard {start_fen}")
 
     def get_fen(self) -> Optional[str]:

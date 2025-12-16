@@ -125,6 +125,10 @@ struct EngineSession {
     int time_per_move_ms  = 0; // from 'st' (fixed seconds per move), 0 if unused
     int max_depth         = 0; // from 'sd', 0 if unlimited
 
+    // Forced-capture variant: captures are mandatory when available.
+    // This engine always operates under forced-capture rules.
+    bool forced_capture_variant = true;
+
     // last root score from previous search (centipawns), if available
     int last_root_score   = 0;
     bool has_root_score   = false;
@@ -153,6 +157,7 @@ void apply_opp_move_elapsed(EngineSession &sess, int elapsed_ms, std::chrono::st
 std::string move_to_uci(const Move &m);
 
 // Parse "e2e4", "e7e8q", etc. into a Move that is legal in `b`.
+bool parse_uci_move(Board &b, const std::string &text, Move &out_move, bool forced_capture_variant);
 bool parse_uci_move(Board &b, const std::string &text, Move &out_move);
 
 

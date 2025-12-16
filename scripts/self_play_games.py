@@ -240,6 +240,7 @@ def handshake(proc: subprocess.Popen, move_time_ms: int, depth: int, timeout: fl
     send(proc, "protover 2")
     send(proc, "new")
     send(proc, "force")
+    send(proc, "david_forced 1")
     if depth > 0:
         send(proc, f"sd {depth}")
     send(proc, f"stms {move_time_ms}")

@@ -96,6 +96,11 @@ See LICENSE file for details.
 // Optional: pass a TimeBudget and receive the final root score.
 Move getBestMove(Board &board, int maxDepth, EvalFn evalFn, const TimeBudget *timeBudget = nullptr, int *outRootScore = nullptr);
 
+// Configure whether the main search should enforce the forced-capture variant
+// (captures are mandatory when available). Quiescence/search internals remain
+// unchanged; this only affects the primary legal-move generator used by search.
+void set_forced_capture_variant(bool enabled);
+
 // Utility exposed for draw detection (50-move / insufficient material).
 bool isInsufficientMaterial(const Board &b);
 

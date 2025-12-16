@@ -105,6 +105,20 @@ static inline void log_msg(const std::string &msg) {
 }
 #endif
 
+static bool g_forced_capture_variant = false;
+
+void set_forced_capture_variant(bool enabled) {
+  g_forced_capture_variant = enabled;
+}
+
+static inline void generate_main_moves(Board &board, Side side, MoveList &outMoves) {
+  if (g_forced_capture_variant) {
+    get_variant_moves(board, side, outMoves);
+  } else {
+    validMoveGeneration(board, side, outMoves, /*captureOnly=*/false);
+  }
+}
+
 // Diagnostic logging to stderr (safe for protocol), gated to avoid blocking when
 // stderr is piped but not drained by the caller.
 #ifdef ENGINE_LOGGING
@@ -490,6 +504,8 @@ int static_exchange_eval(const Board &board, const Move &m)
 // Uses SEE plus a cheap static-eval delta; returns penalty in centipawns for ordering/eval.
 static int compute_provoke_penalty(Board &board, const Move &quietMove, Side us, EvalFn evalFn)
 {
+  if (!g_forced_capture_variant) return 0;
+
   // Only apply to quiet moves
   if (quietMove.isCapture()) return 0;
 
@@ -498,7 +514,7 @@ static int compute_provoke_penalty(Board &board, const Move &quietMove, Side us,
 
   const Side opp = (us == WHITE ? BLACK : WHITE);
   MoveList oppMoves;
-  get_variant_moves(board, opp, oppMoves); // variant enforces capture-only if any capture exists
+  generate_main_moves(board, opp, oppMoves); // variant enforces capture-only if any capture exists
 
   int penalty = 0;
   if (!oppMoves.empty() && oppMoves.moves[0].isCapture())
@@ -611,11 +627,11 @@ int search(Board &board,
 
   // Generate moves (needed to know if captures are still forced for extension).
   MoveList moves;
-  get_variant_moves(board, sideToMove, moves);
+  generate_main_moves(board, sideToMove, moves);
 
   // Capture-chain extension: once per path, trigger after consecutive captures
   // when the position still forces captures (variant move list is capture-only).
-  const bool forcedCaptures = (moves.count > 0) && moves.moves[0].isCapture();
+  const bool forcedCaptures = g_forced_capture_variant && (moves.count > 0) && moves.moves[0].isCapture();
   int effectiveDepth = depth;
   int usedExtensions = extensionsUsed;
   if (extensionEligible && forcedCaptures)

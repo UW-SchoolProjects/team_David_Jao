@@ -189,6 +189,7 @@ def handshake(proc: subprocess.Popen, args, fail_logger: Optional[FailLogger] = 
         return False
     if not send(proc, "force"):
         return False
+    send(proc, "david_forced 1")
     if args.deep_depth > 0:
         send(proc, f"sd {args.deep_depth}")
     if args.deep_time_ms > 0:

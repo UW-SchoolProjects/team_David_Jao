@@ -151,6 +151,7 @@ def handshake(proc: subprocess.Popen, args) -> bool:
     send(proc, "protover 2")
     send(proc, "new")
     send(proc, "force")
+    send(proc, "david_forced 1")
     if args.depth:
         send(proc, f"sd {args.depth}")
     send(proc, f"stms {args.move_time_ms}")
